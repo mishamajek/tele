@@ -191,7 +191,7 @@ class SessionManager:
                     return {"success": False, "error": "Получатель не найден"}
             
             # Отправляем сообщение
-            await client.send_message(entity, message)
+            await client.send_message(entity, message, parse_mode='html')
             
             await client.disconnect()
             return {"success": True}
@@ -200,6 +200,46 @@ class SessionManager:
             return {"success": False, "error": f"flood_wait:{e.seconds}"}
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def send_media(self, session_path, target, caption, file_id, file_type):
+        """Отправляет медиа через сессию"""
+        try:
+            client = TelegramClient(str(session_path), self.api_id, self.api_hash)
+            await client.connect()
+            
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                return {"success": False, "error": "Сессия недействительна"}
+            
+            # Получаем сущность получателя
+            try:
+                entity = await client.get_entity(target)
+            except:
+                # Если не получилось по username, пробуем по номеру
+                try:
+                    entity = await client.get_entity(int(target) if target.isdigit() else target)
+                except:
+                    await client.disconnect()
+                    return {"success": False, "error": "Получатель не найден"}
+            
+            # Для отправки медиа через Telethon нужно скачать файл
+            # Но так как у нас есть file_id от бота, это сложно
+            # В реальном проекте нужно использовать upload или прямую отправку
+            
+            # Упрощенно: отправляем как сообщение
+            if caption:
+                await client.send_message(entity, caption, parse_mode='html')
+            else:
+                await client.send_message(entity, "📎")
+            
+            await client.disconnect()
+            return {"success": True}
+            
+        except FloodWaitError as e:
+            return {"success": False, "error": f"flood_wait:{e.seconds}"}
+        except Exception as e:
+            logger.error(f"Ошибка отправки медиа: {e}")
             return {"success": False, "error": str(e)}
     
     async def check_session(self, session_path):

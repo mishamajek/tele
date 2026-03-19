@@ -29,5 +29,5 @@ DEFAULT_SUBSCRIPTION_PRICE = 60
 DEFAULT_ACCOUNT_PRICE = 50
 
 # Настройки рассылки
-MAX_MESSAGES_PER_DAY = 100  # Максимум сообщений в день на аккаунт
-MESSAGE_DELAY = 3  # Задержка между сообщениями (секунд)
+MAX_MESSAGES_PER_DAY = 300  # Максимум сообщений в день на аккаунт
+MESSAGE_DELAY = 300  # Задержка между сообщениями (секунд)

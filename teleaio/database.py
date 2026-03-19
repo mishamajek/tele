@@ -78,10 +78,13 @@ class Database:
             c.execute('''CREATE TABLE IF NOT EXISTS mailings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                message_text TEXT NOT NULL,
+                message_text TEXT,
                 targets TEXT NOT NULL,
+                media_file_id TEXT,
+                media_type TEXT,
                 accounts_used INTEGER DEFAULT 0,
                 messages_sent INTEGER DEFAULT 0,
+                total_targets INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'pending',
                 started TIMESTAMP,
                 completed TIMESTAMP,
@@ -243,7 +246,8 @@ class Database:
                 ''', (user_id, phone, session_path, api_id, api_hash))
                 conn.commit()
                 return c.lastrowid
-            except:
+            except Exception as e:
+                print(f"Ошибка добавления аккаунта: {e}")
                 return None
     
     def get_user_accounts(self, user_id):
@@ -273,6 +277,18 @@ class Database:
                     total_messages_sent = total_messages_sent + 1
                 WHERE id = ?
             ''', (account_id,))
+            conn.commit()
+    
+    def deactivate_account(self, account_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('UPDATE user_accounts SET is_active = 0 WHERE id = ?', (account_id,))
+            conn.commit()
+    
+    def deactivate_all_accounts(self, user_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('UPDATE user_accounts SET is_active = 0 WHERE user_id = ?', (user_id,))
             conn.commit()
     
     def delete_user_account(self, account_id, user_id):
@@ -341,13 +357,13 @@ class Database:
             return [dict(row) for row in c.fetchall()]
     
     # === РАССЫЛКИ ===
-    def create_mailing(self, user_id, message_text, targets):
+    def create_mailing(self, user_id, message_text, targets, media_file_id=None, media_type=None):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('''
-                INSERT INTO mailings (user_id, message_text, targets)
-                VALUES (?, ?, ?)
-            ''', (user_id, message_text, json.dumps(targets)))
+                INSERT INTO mailings (user_id, message_text, targets, media_file_id, media_type, total_targets)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, message_text, json.dumps(targets), media_file_id, media_type, len(targets)))
             conn.commit()
             return c.lastrowid
     
@@ -396,6 +412,16 @@ class Database:
             ''', (user_id, limit))
             return [dict(row) for row in c.fetchall()]
     
+    def delete_mailing(self, mailing_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            # Удаляем из очереди
+            c.execute('DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
+            # Удаляем рассылку
+            c.execute('DELETE FROM mailings WHERE id = ?', (mailing_id,))
+            conn.commit()
+            return True
+    
     # === ОЧЕРЕДЬ СООБЩЕНИЙ ===
     def add_to_queue(self, mailing_id, account_id, targets):
         with self.get_conn() as conn:
@@ -407,15 +433,23 @@ class Database:
                 ''', (mailing_id, account_id, target))
             conn.commit()
     
-    def get_pending_messages(self, limit=10):
+    def get_pending_messages(self, mailing_id=None, limit=10):
         with self.get_conn() as conn:
             c = conn.cursor()
-            c.execute('''
-                SELECT * FROM message_queue 
-                WHERE status = 'pending'
-                ORDER BY id
-                LIMIT ?
-            ''', (limit,))
+            if mailing_id:
+                c.execute('''
+                    SELECT * FROM message_queue 
+                    WHERE status = 'pending' AND mailing_id = ?
+                    ORDER BY id
+                    LIMIT ?
+                ''', (mailing_id, limit))
+            else:
+                c.execute('''
+                    SELECT * FROM message_queue 
+                    WHERE status = 'pending'
+                    ORDER BY id
+                    LIMIT ?
+                ''', (limit,))
             return [dict(row) for row in c.fetchall()]
     
     def update_queue_status(self, queue_id, status, error=None):

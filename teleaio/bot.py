@@ -14,6 +14,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InputMediaPhoto, InputMediaDocument
 
 import config
 from database import Database
@@ -28,7 +30,7 @@ bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseM
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 session_manager = SessionManager()
-mailing_manager = MailingManager()
+mailing_manager = MailingManager(bot, db)
 
 # ================== FSM СОСТОЯНИЯ ==================
 class AddAccount(StatesGroup):
@@ -38,6 +40,7 @@ class AddAccount(StatesGroup):
 
 class NewMailing(StatesGroup):
     text = State()
+    media = State()
     targets = State()
     confirm = State()
 
@@ -51,17 +54,18 @@ class AdminAddAccount(StatesGroup):
 
 class AdminBroadcast(StatesGroup):
     text = State()
+    media = State()
     confirm = State()
 
 # ================== УТИЛИТЫ ==================
-async def clean_and_send(chat_id, text, kb=None, msg_to_delete=None):
+async def clean_and_send(chat_id, text, kb=None, msg_to_delete=None, parse_mode=ParseMode.HTML):
     """Отправляет сообщение и удаляет предыдущее"""
     if msg_to_delete:
         try:
             await bot.delete_message(chat_id, msg_to_delete)
         except:
             pass
-    msg = await bot.send_message(chat_id, text, reply_markup=kb)
+    msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode=parse_mode)
     return msg
 
 async def safe_delete_message(chat_id, message_id):
@@ -85,7 +89,7 @@ def is_admin(user_id):
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
 async def show_main_menu(chat_id, msg_id=None):
     """Показывает главное меню"""
-    text = "═══════════════════════════\nГлавное меню\n═══════════════════════════"
+    text = "═══════════════════════════\n<b>Главное меню</b>\n═══════════════════════════"
     await clean_and_send(chat_id, text, main_kb(), msg_id)
 
 async def show_mailing_menu(user_id, chat_id, msg_id=None):
@@ -96,7 +100,7 @@ async def show_mailing_menu(user_id, chat_id, msg_id=None):
         price = db.get_setting('subscription_price') or 60
         text = (
             f"═══════════════════════════\n"
-            f"ДОСТУП ЗАПРЕЩЕН\n"
+            f"<b>ДОСТУП ЗАПРЕЩЕН</b>\n"
             f"═══════════════════════════\n\n"
             f"Для использования рассылки нужна подписка\n\n"
             f"• 24 часа бесплатно\n"
@@ -113,7 +117,7 @@ async def show_mailing_menu(user_id, chat_id, msg_id=None):
     
     text = (
         f"═══════════════════════════\n"
-        f"МАССОВАЯ РАССЫЛКА\n"
+        f"<b>МАССОВАЯ РАССЫЛКА</b>\n"
         f"═══════════════════════════\n\n"
         f"Аккаунтов: {len(accounts)}\n\n"
     )
@@ -131,7 +135,7 @@ async def show_my_accounts(user_id, chat_id, msg_id=None):
     
     text = (
         f"═══════════════════════════\n"
-        f"МОИ АККАУНТЫ\n"
+        f"<b>МОИ АККАУНТЫ</b>\n"
         f"═══════════════════════════\n\n"
         f"Всего: {len(accounts)}\n\n"
     )
@@ -178,9 +182,9 @@ async def show_profile(user_id, chat_id, msg_id=None):
     
     text = (
         f"═══════════════════════════\n"
-        f"ПРОФИЛЬ\n"
+        f"<b>ПРОФИЛЬ</b>\n"
         f"═══════════════════════════\n\n"
-        f"ID: {user_id}\n"
+        f"ID: <code>{user_id}</code>\n"
         f"Имя: {user['first_name'] or '—'}\n"
         f"Ник: @{user['username'] or '—'}\n\n"
         f"Подписка: {sub_status} {sub_date}\n"
@@ -198,16 +202,16 @@ async def show_my_mailings(user_id, chat_id, msg_id=None):
     
     text = (
         f"═══════════════════════════\n"
-        f"МОИ РАССЫЛКИ\n"
+        f"<b>МОИ РАССЫЛКИ</b>\n"
         f"═══════════════════════════\n\n"
     )
     
     if mailings:
         for m in mailings[:10]:
             status_emoji = "✅" if m['status'] == 'completed' else "⏳" if m['status'] == 'running' else "⏸️"
-            text += f"{status_emoji} ID: {m['id']} - {m['started'][:16] if m['started'] else 'Новая'}\n"
+            text += f"{status_emoji} <b>ID: {m['id']}</b> - {m['started'][:16] if m['started'] else 'Новая'}\n"
             text += f"   Статус: {m['status']}\n"
-            text += f"   Отправлено: {m['messages_sent']}\n\n"
+            text += f"   Отправлено: {m['messages_sent']}/{m['total_targets']}\n\n"
     else:
         text += "У вас пока нет рассылок"
     
@@ -220,7 +224,7 @@ async def show_accounts(user_id, chat_id, msg_id=None):
     
     text = (
         f"═══════════════════════════\n"
-        f"ДОСТУПНЫЕ АККАУНТЫ\n"
+        f"<b>ДОСТУПНЫЕ АККАУНТЫ</b>\n"
         f"═══════════════════════════\n\n"
         f"Всего: {len(accounts)}\n\n"
         f"Цена: {db.get_setting('account_price') or 50}⭐ за аккаунт\n\n"
@@ -228,7 +232,8 @@ async def show_accounts(user_id, chat_id, msg_id=None):
     )
     
     await clean_and_send(chat_id, text, accounts_kb(accounts, page), msg_id)
-    # ================== СТАРТ И НАВИГАЦИЯ ==================
+
+# ================== СТАРТ И НАВИГАЦИЯ ==================
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
     user_id = msg.from_user.id
@@ -261,7 +266,7 @@ async def universal_back_handler(cb: types.CallbackQuery, state: FSMContext):
     elif dest == "accounts":
         await show_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
     elif dest == "admin":
-        text = "═══════════════════════════\nАДМИН-ПАНЕЛЬ\n═══════════════════════════"
+        text = "═══════════════════════════\n<b>АДМИН-ПАНЕЛЬ</b>\n═══════════════════════════"
         await clean_and_send(cb.message.chat.id, text, admin_kb(), cb.message.message_id)
     else:
         await show_main_menu(cb.message.chat.id, cb.message.message_id)
@@ -272,7 +277,7 @@ async def cancel_operation_handler(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     session_manager.cancel_pending(cb.from_user.id)
     await cb.answer("❌ Операция отменена")
-    await universal_back_handler(cb, state)
+    await show_main_menu(cb.message.chat.id, cb.message.message_id)
 
 @dp.callback_query(F.data == "ignore")
 async def ignore_cb(cb: types.CallbackQuery):
@@ -299,6 +304,29 @@ async def my_mailings_cb(cb: types.CallbackQuery):
 async def accounts_cb(cb: types.CallbackQuery):
     await show_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
 
+@dp.callback_query(F.data == "help")
+async def help_cb(cb: types.CallbackQuery):
+    text = (
+        f"═══════════════════════════\n"
+        f"<b>ПОМОЩЬ</b>\n"
+        f"═══════════════════════════\n\n"
+        f"<b>📱 Добавление аккаунтов:</b>\n"
+        f"1. Нажмите 'РАССЫЛКА'\n"
+        f"2. 'ДОБАВИТЬ АККАУНТ'\n"
+        f"3. Введите номер и код\n\n"
+        f"<b>📨 Рассылка:</b>\n"
+        f"• Текст можно форматировать:\n"
+        f"  <b>жирный</b>, <i>курсив</i>, <u>подчеркнутый</u>, <code>моно</code>\n"
+        f"• Можно прикрепить фото или GIF\n"
+        f"• Получатели: username или номер\n\n"
+        f"<b>⚙️ Управление:</b>\n"
+        f"• Мои рассылки - просмотр и удаление\n"
+        f"• Аккаунты - покупка готовых\n"
+        f"• Профиль - подписка и история"
+    )
+    await cb.answer()
+    await clean_and_send(cb.message.chat.id, text, back_kb("main"), cb.message.message_id)
+
 # ================== ПРОФИЛЬ И ПОДПИСКИ ==================
 @dp.callback_query(F.data == "subscription_info")
 async def subscription_info_cb(cb: types.CallbackQuery):
@@ -311,7 +339,7 @@ async def subscription_info_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"ПОДПИСКА\n"
+        f"<b>ПОДПИСКА</b>\n"
         f"═══════════════════════════\n\n"
     )
     
@@ -336,7 +364,7 @@ async def my_purchases_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"ИСТОРИЯ ПОКУПОК\n"
+        f"<b>ИСТОРИЯ ПОКУПОК</b>\n"
         f"═══════════════════════════\n\n"
     )
     
@@ -379,7 +407,7 @@ async def trial_subscription_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"ПРОБНЫЙ ПЕРИОД АКТИВИРОВАН\n"
+        f"<b>ПРОБНЫЙ ПЕРИОД АКТИВИРОВАН</b>\n"
         f"═══════════════════════════\n\n"
         f"✅ 24 часа бесплатного доступа\n\n"
         f"Теперь вы можете добавлять аккаунты\n"
@@ -406,7 +434,7 @@ async def payment_success_handler(msg: types.Message):
         
         text = (
             f"═══════════════════════════\n"
-            f"ПОДПИСКА АКТИВИРОВАНА\n"
+            f"<b>ПОДПИСКА АКТИВИРОВАНА</b>\n"
             f"═══════════════════════════\n\n"
             f"✅ Спасибо за покупку!\n"
             f"Подписка активна 7 дней\n\n"
@@ -432,7 +460,7 @@ async def payment_success_handler(msg: types.Message):
             
             text = (
                 f"═══════════════════════════\n"
-                f"АККАУНТ ПРИОБРЕТЕН\n"
+                f"<b>АККАУНТ ПРИОБРЕТЕН</b>\n"
                 f"═══════════════════════════\n\n"
                 f"✅ Аккаунт {account['phone']} ваш!\n"
                 f"Файл сессии отправлен выше"
@@ -450,7 +478,7 @@ async def accounts_page_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"ДОСТУПНЫЕ АККАУНТЫ\n"
+        f"<b>ДОСТУПНЫЕ АККАУНТЫ</b>\n"
         f"═══════════════════════════\n\n"
         f"Всего: {len(accounts)}\n"
         f"Страница {page+1}"
@@ -494,43 +522,32 @@ async def mailing_info_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Неверный формат")
         return
     
-    status = mailing_manager.get_mailing_status(mailing_id)
+    mailing = db.get_mailing(mailing_id)
     
-    if not status:
+    if not mailing or mailing['user_id'] != cb.from_user.id:
         await cb.answer("❌ Рассылка не найдена", show_alert=True)
         return
     
     stats = db.get_queue_stats(mailing_id)
     
+    media_type = "📷 Фото" if mailing['media_type'] == 'photo' else "🎞 GIF" if mailing['media_type'] == 'gif' else "📝 Текст"
+    
     text = (
         f"═══════════════════════════\n"
-        f"РАССЫЛКА #{mailing_id}\n"
+        f"<b>РАССЫЛКА #{mailing_id}</b>\n"
         f"═══════════════════════════\n\n"
-        f"Статус: {status['status'].upper()}\n"
+        f"Статус: <b>{mailing['status'].upper()}</b>\n"
+        f"Тип: {media_type}\n"
         f"Всего целей: {stats['total']}\n"
         f"✅ Отправлено: {stats['sent']}\n"
         f"❌ Ошибок: {stats['failed']}\n"
-        f"Начало: {status['started'] or '—'}\n"
-        f"Завершение: {status['completed'] or '—'}\n\n"
-        f"Настройки:\n"
-        f"⏱ Задержка: {db.get_setting('message_delay')} сек\n"
-        f"📊 Лимит в день: {db.get_setting('max_messages_per_day')}\n"
+        f"Начало: {mailing['started'] or '—'}\n"
+        f"Завершение: {mailing['completed'] or '—'}\n\n"
+        f"Текст:\n<blockquote>{mailing['message_text'][:200]}</blockquote>\n" if mailing['message_text'] else ""
     )
     
-    builder = InlineKeyboardBuilder()
-    
-    if status['status'] == 'running':
-        builder.button(text="[ ⏸️ ПРИОСТАНОВИТЬ ]", callback_data=f"mailing_pause_{mailing_id}")
-    elif status['status'] == 'pending' or status['status'] == 'stopped':
-        builder.button(text="[ ▶️ ВОЗОБНОВИТЬ ]", callback_data=f"mailing_resume_{mailing_id}")
-    
-    builder.button(text="[ ⏱ ИЗМЕНИТЬ ЗАДЕРЖКУ ]", callback_data=f"mailing_delay_{mailing_id}")
-    builder.button(text="[ 📊 ОБНОВИТЬ ]", callback_data=f"mailing_refresh_{mailing_id}")
-    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_mailings")
-    builder.adjust(1)
-    
     await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, builder.as_markup(), cb.message.message_id)
+    await clean_and_send(cb.message.chat.id, text, mailing_info_kb(mailing_id), cb.message.message_id)
 
 @dp.callback_query(F.data.startswith("mailing_refresh_"))
 async def mailing_refresh_cb(cb: types.CallbackQuery):
@@ -570,14 +587,22 @@ async def mailing_resume_cb(cb: types.CallbackQuery):
         return
     
     mailing = db.get_mailing(mailing_id)
-    if not mailing:
+    if not mailing or mailing['user_id'] != cb.from_user.id:
         await cb.answer("❌ Рассылка не найдена")
+        return
+    
+    # Проверяем подписку
+    if not db.has_active_subscription(cb.from_user.id):
+        await cb.answer("❌ Нужна подписка", show_alert=True)
         return
     
     result = await mailing_manager.start_mailing(
         mailing['user_id'],
+        mailing_id,
         mailing['message_text'],
-        json.loads(mailing['targets'])
+        json.loads(mailing['targets']),
+        mailing['media_file_id'],
+        mailing['media_type']
     )
     
     if result['success']:
@@ -588,27 +613,29 @@ async def mailing_resume_cb(cb: types.CallbackQuery):
     cb.data = f"mailing_info_{mailing_id}"
     await mailing_info_cb(cb)
 
-@dp.callback_query(F.data.startswith("mailing_delay_"))
-async def mailing_delay_cb(cb: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("mailing_delete_"))
+async def mailing_delete_cb(cb: types.CallbackQuery):
     try:
-        mailing_id = int(cb.data.replace("mailing_delay_", ""))
+        mailing_id = int(cb.data.replace("mailing_delete_", ""))
     except ValueError:
         await cb.answer("❌ Неверный формат")
         return
     
-    await state.set_state(EditPrice.waiting_for_price)
-    await state.update_data(
-        price_key='message_delay',
-        price_name='задержки между сообщениями (сек)',
-        return_to=f"mailing_info_{mailing_id}"
-    )
+    mailing = db.get_mailing(mailing_id)
+    if not mailing or mailing['user_id'] != cb.from_user.id:
+        await cb.answer("❌ Рассылка не найдена", show_alert=True)
+        return
     
-    current_delay = db.get_setting('message_delay') or 3
-    text = f"⏱ Введите новую задержку между сообщениями в секундах\n\nТекущая: {current_delay} сек"
+    # Останавливаем если запущена
+    await mailing_manager.stop_mailing(mailing_id)
     
-    await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
-    # ================== ДОБАВЛЕНИЕ АККАУНТОВ ПОЛЬЗОВАТЕЛЯ ==================
+    # Удаляем из БД
+    db.delete_mailing(mailing_id)
+    
+    await cb.answer("✅ Рассылка удалена")
+    await show_my_mailings(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
+
+# ================== ДОБАВЛЕНИЕ АККАУНТОВ ПОЛЬЗОВАТЕЛЯ ==================
 @dp.callback_query(F.data == "add_account")
 async def add_account_start(cb: types.CallbackQuery, state: FSMContext):
     user_id = cb.from_user.id
@@ -621,11 +648,11 @@ async def add_account_start(cb: types.CallbackQuery, state: FSMContext):
     
     text = (
         f"═══════════════════════════\n"
-        f"ДОБАВЛЕНИЕ АККАУНТА\n"
+        f"<b>ДОБАВЛЕНИЕ АККАУНТА</b>\n"
         f"═══════════════════════════\n\n"
         f"Шаг 1/3\n\n"
         f"Отправьте номер телефона в формате:\n"
-        f"+71234567890\n\n"
+        f"<code>+71234567890</code>\n\n"
         f"На этот номер придет код подтверждения"
     )
     
@@ -730,9 +757,9 @@ async def account_info_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"АККАУНТ {account['phone']}\n"
+        f"<b>АККАУНТ {account['phone']}</b>\n"
         f"═══════════════════════════\n\n"
-        f"📱 Номер: {account['phone']}\n"
+        f"📱 Номер: <code>{account['phone']}</code>\n"
         f"📅 Добавлен: {account['added_date'][:16]}\n"
         f"📊 Всего отправлено: {account['total_messages_sent']}\n"
         f"📈 Отправлено сегодня: {account['messages_sent_today']}\n"
@@ -764,9 +791,7 @@ async def logout_account_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Аккаунт не найден", show_alert=True)
         return
     
-    with db.get_conn() as conn:
-        conn.execute("UPDATE user_accounts SET is_active = 0 WHERE id = ?", (account_id,))
-        conn.commit()
+    db.deactivate_account(account_id)
     
     await cb.answer(f"✅ Выход выполнен")
     await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
@@ -782,7 +807,7 @@ async def logout_all_accounts_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"ПОДТВЕРЖДЕНИЕ\n"
+        f"<b>ПОДТВЕРЖДЕНИЕ</b>\n"
         f"═══════════════════════════\n\n"
         f"Вы уверены, что хотите выйти из ВСЕХ аккаунтов?\n\n"
         f"Сессии останутся в системе, но будут деактивированы."
@@ -795,9 +820,7 @@ async def logout_all_accounts_cb(cb: types.CallbackQuery):
 async def confirm_logout_all_cb(cb: types.CallbackQuery):
     user_id = cb.from_user.id
     
-    with db.get_conn() as conn:
-        conn.execute("UPDATE user_accounts SET is_active = 0 WHERE user_id = ?", (user_id,))
-        conn.commit()
+    db.deactivate_all_accounts(user_id)
     
     await cb.answer("✅ Выход выполнен из всех аккаунтов")
     await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
@@ -840,11 +863,16 @@ async def new_mailing_start(cb: types.CallbackQuery, state: FSMContext):
     
     text = (
         f"═══════════════════════════\n"
-        f"НОВАЯ РАССЫЛКА\n"
+        f"<b>НОВАЯ РАССЫЛКА</b>\n"
         f"═══════════════════════════\n\n"
-        f"Шаг 1/3\n\n"
-        f"Отправьте текст для рассылки.\n"
-        f"Можно использовать эмодзи и форматирование."
+        f"Шаг 1/4\n\n"
+        f"Отправьте <b>текст</b> для рассылки.\n\n"
+        f"<b>Форматирование:</b>\n"
+        f"• <b>жирный</b> - &lt;b&gt;текст&lt;/b&gt;\n"
+        f"• <i>курсив</i> - &lt;i&gt;текст&lt;/i&gt;\n"
+        f"• <u>подчеркнутый</u> - &lt;u&gt;текст&lt;/u&gt;\n"
+        f"• <code>моно</code> - &lt;code&gt;текст&lt;/code&gt;\n\n"
+        f"Или отправьте команду /skip, чтобы пропустить текст"
     )
     
     await cb.answer()
@@ -852,23 +880,80 @@ async def new_mailing_start(cb: types.CallbackQuery, state: FSMContext):
 
 @dp.message(NewMailing.text)
 async def new_mailing_text(msg: types.Message, state: FSMContext):
-    await state.update_data(text=msg.text)
-    await state.set_state(NewMailing.targets)
+    if msg.text == "/skip":
+        await state.update_data(text=None)
+    else:
+        await state.update_data(text=msg.text)
+    
+    await state.set_state(NewMailing.media)
     
     text = (
         f"═══════════════════════════\n"
-        f"НОВАЯ РАССЫЛКА\n"
+        f"<b>НОВАЯ РАССЫЛКА</b>\n"
         f"═══════════════════════════\n\n"
-        f"Шаг 2/3\n\n"
-        f"Отправьте список получателей.\n"
-        f"Каждый получатель с новой строки.\n\n"
-        f"Форматы:\n"
-        f"• @username\n"
-        f"• +71234567890\n"
-        f"• 71234567890"
+        f"Шаг 2/4\n\n"
+        f"Отправьте <b>фото или GIF</b> (опционально)\n\n"
+        f"Или отправьте /skip, чтобы продолжить без медиа"
     )
     
     await clean_and_send(msg.chat.id, text, cancel_only_kb())
+
+@dp.message(NewMailing.media, F.photo | F.document | F.animation)
+async def new_mailing_media(msg: types.Message, state: FSMContext):
+    media_file_id = None
+    media_type = None
+    
+    if msg.photo:
+        media_file_id = msg.photo[-1].file_id
+        media_type = 'photo'
+    elif msg.animation:
+        media_file_id = msg.animation.file_id
+        media_type = 'gif'
+    elif msg.document and msg.document.mime_type in ['image/gif', 'image/jpeg', 'image/png']:
+        media_file_id = msg.document.file_id
+        media_type = 'document'
+    
+    if media_file_id:
+        await state.update_data(media_file_id=media_file_id, media_type=media_type)
+        await state.set_state(NewMailing.targets)
+        
+        text = (
+            f"═══════════════════════════\n"
+            f"<b>НОВАЯ РАССЫЛКА</b>\n"
+            f"═══════════════════════════\n\n"
+            f"Шаг 3/4\n\n"
+            f"Отправьте список <b>получателей</b>.\n"
+            f"Каждый получатель с новой строки.\n\n"
+            f"<b>Форматы:</b>\n"
+            f"• @username\n"
+            f"• +71234567890\n"
+            f"• 71234567890"
+        )
+        await clean_and_send(msg.chat.id, text, cancel_only_kb())
+    else:
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото или GIF")
+
+@dp.message(NewMailing.media)
+async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
+    if msg.text == "/skip":
+        await state.update_data(media_file_id=None, media_type=None)
+        await state.set_state(NewMailing.targets)
+        
+        text = (
+            f"═══════════════════════════\n"
+            f"<b>НОВАЯ РАССЫЛКА</b>\n"
+            f"═══════════════════════════\n\n"
+            f"Шаг 3/4\n\n"
+            f"Отправьте список <b>получателей</b>.\n"
+            f"Каждый получатель с новой строки.\n\n"
+            f"<b>Форматы:</b>\n"
+            f"• @username\n"
+            f"• +71234567890\n"
+            f"• 71234567890"
+        )
+        await clean_and_send(msg.chat.id, text, cancel_only_kb())
+    else:
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото, GIF или /skip")
 
 @dp.message(NewMailing.targets)
 async def new_mailing_targets(msg: types.Message, state: FSMContext):
@@ -882,14 +967,16 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
     await state.set_state(NewMailing.confirm)
     
     data = await state.get_data()
-    text_preview = data['text'][:100] + "..." if len(data['text']) > 100 else data['text']
+    text_preview = data.get('text', '')[:100] + "..." if data.get('text') and len(data['text']) > 100 else data.get('text', '—')
+    media_info = "📷 С фото" if data.get('media_type') in ['photo', 'document'] else "🎞 С GIF" if data.get('media_type') == 'gif' else "📝 Без медиа"
     
     text = (
         f"═══════════════════════════\n"
-        f"ПОДТВЕРЖДЕНИЕ\n"
+        f"<b>ПОДТВЕРЖДЕНИЕ</b>\n"
         f"═══════════════════════════\n\n"
-        f"Текст:\n{text_preview}\n\n"
-        f"Получателей: {len(targets)}\n\n"
+        f"<b>Текст:</b>\n{text_preview}\n\n"
+        f"<b>Медиа:</b> {media_info}\n"
+        f"<b>Получателей:</b> {len(targets)}\n\n"
         f"Запустить рассылку?"
     )
     
@@ -905,14 +992,31 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = cb.from_user.id
     
-    result = await mailing_manager.start_mailing(user_id, data['text'], data['targets'])
+    # Создаем рассылку в БД
+    mailing_id = db.create_mailing(
+        user_id, 
+        data.get('text'), 
+        data['targets'],
+        data.get('media_file_id'),
+        data.get('media_type')
+    )
+    
+    # Запускаем
+    result = await mailing_manager.start_mailing(
+        user_id, 
+        mailing_id,
+        data.get('text'), 
+        data['targets'],
+        data.get('media_file_id'),
+        data.get('media_type')
+    )
     
     if result['success']:
         text = (
             f"═══════════════════════════\n"
-            f"РАССЫЛКА ЗАПУЩЕНА\n"
+            f"<b>РАССЫЛКА ЗАПУЩЕНА</b>\n"
             f"═══════════════════════════\n\n"
-            f"✅ ID: {result['mailing_id']}\n"
+            f"✅ ID: <b>{mailing_id}</b>\n"
             f"Получателей: {len(data['targets'])}\n\n"
             f"Статус можно отслеживать в разделе\n"
             f"'Мои рассылки'"
@@ -930,7 +1034,7 @@ async def admin_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     
-    text = "═══════════════════════════\nАДМИН-ПАНЕЛЬ\n═══════════════════════════"
+    text = "═══════════════════════════\n<b>АДМИН-ПАНЕЛЬ</b>\n═══════════════════════════"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, admin_kb(), cb.message.message_id)
 
@@ -945,7 +1049,7 @@ async def admin_stats_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"СТАТИСТИКА\n"
+        f"<b>СТАТИСТИКА</b>\n"
         f"═══════════════════════════\n\n"
         f"👥 Пользователей: {stats['users']}\n"
         f"✅ Активных подписок: {stats['active_subs']}\n"
@@ -955,7 +1059,7 @@ async def admin_stats_cb(cb: types.CallbackQuery):
         f"📨 Рассылок: {stats['mailings']}\n"
         f"✉️ Отправлено сообщений: {stats['messages_sent']}\n"
         f"⭐ Заработано звезд: {stats['purchases_total']}\n\n"
-        f"⚙️ Настройки:\n"
+        f"<b>⚙️ Настройки:</b>\n"
         f"Подписка: {settings.get('subscription_price', '—')}⭐\n"
         f"Аккаунт: {settings.get('account_price', '—')}⭐\n"
         f"Пробный: {settings.get('trial_hours', '—')}ч\n"
@@ -976,7 +1080,7 @@ async def admin_prices_cb(cb: types.CallbackQuery):
     
     text = (
         f"═══════════════════════════\n"
-        f"УПРАВЛЕНИЕ ЦЕНАМИ\n"
+        f"<b>УПРАВЛЕНИЕ ЦЕНАМИ</b>\n"
         f"═══════════════════════════\n\n"
         f"Текущие настройки:\n"
         f"Подписка: {settings.get('subscription_price', '—')}⭐\n"
@@ -1073,11 +1177,11 @@ async def admin_add_account_start(cb: types.CallbackQuery, state: FSMContext):
     
     text = (
         f"═══════════════════════════\n"
-        f"ДОБАВЛЕНИЕ АККАУНТА\n"
+        f"<b>ДОБАВЛЕНИЕ АККАУНТА</b>\n"
         f"═══════════════════════════\n\n"
         f"Шаг 1/3\n\n"
         f"Отправьте номер телефона в формате:\n"
-        f"+71234567890"
+        f"<code>+71234567890</code>"
     )
     
     await cb.answer()
@@ -1130,9 +1234,9 @@ async def admin_add_account_file(msg: types.Message, state: FSMContext):
     if account_id:
         text = (
             f"═══════════════════════════\n"
-            f"АККАУНТ ДОБАВЛЕН\n"
+            f"<b>АККАУНТ ДОБАВЛЕН</b>\n"
             f"═══════════════════════════\n\n"
-            f"✅ Номер: {phone}\n"
+            f"✅ Номер: <code>{phone}</code>\n"
             f"✅ Цена: {price}⭐\n"
             f"✅ Файл: {doc.file_name}\n"
             f"✅ ID: {account_id}"
@@ -1158,9 +1262,10 @@ async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
     
     text = (
         f"═══════════════════════════\n"
-        f"РАССЫЛКА ВСЕМ ПОЛЬЗОВАТЕЛЯМ\n"
+        f"<b>РАССЫЛКА ВСЕМ ПОЛЬЗОВАТЕЛЯМ</b>\n"
         f"═══════════════════════════\n\n"
-        f"Отправьте текст для рассылки:"
+        f"Шаг 1/3\n\n"
+        f"Отправьте <b>текст</b> для рассылки:"
     )
     
     await cb.answer()
@@ -1169,15 +1274,46 @@ async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
 @dp.message(AdminBroadcast.text)
 async def admin_broadcast_text(msg: types.Message, state: FSMContext):
     await state.update_data(text=msg.text)
-    await state.set_state(AdminBroadcast.confirm)
-    
-    text_preview = msg.text[:100] + "..." if len(msg.text) > 100 else msg.text
+    await state.set_state(AdminBroadcast.media)
     
     text = (
         f"═══════════════════════════\n"
-        f"ПОДТВЕРЖДЕНИЕ\n"
+        f"<b>РАССЫЛКА ВСЕМ ПОЛЬЗОВАТЕЛЯМ</b>\n"
         f"═══════════════════════════\n\n"
-        f"Текст:\n{text_preview}\n\n"
+        f"Шаг 2/3\n\n"
+        f"Отправьте <b>фото или GIF</b> (опционально)\n\n"
+        f"Или отправьте /skip"
+    )
+    await clean_and_send(msg.chat.id, text, cancel_only_kb())
+
+@dp.message(AdminBroadcast.media, F.photo | F.animation | F.document)
+async def admin_broadcast_media(msg: types.Message, state: FSMContext):
+    media_file_id = None
+    media_type = None
+    
+    if msg.photo:
+        media_file_id = msg.photo[-1].file_id
+        media_type = 'photo'
+    elif msg.animation:
+        media_file_id = msg.animation.file_id
+        media_type = 'gif'
+    elif msg.document:
+        media_file_id = msg.document.file_id
+        media_type = 'document'
+    
+    await state.update_data(media_file_id=media_file_id, media_type=media_type)
+    await state.set_state(AdminBroadcast.confirm)
+    
+    data = await state.get_data()
+    text_preview = data.get('text', '')[:100] + "..." if len(data['text']) > 100 else data['text']
+    media_info = "📷 С фото" if media_type in ['photo', 'document'] else "🎞 С GIF" if media_type == 'gif' else "📝 Без медиа"
+    
+    text = (
+        f"═══════════════════════════\n"
+        f"<b>ПОДТВЕРЖДЕНИЕ</b>\n"
+        f"═══════════════════════════\n\n"
+        f"<b>Текст:</b>\n{text_preview}\n\n"
+        f"<b>Медиа:</b> {media_info}\n\n"
         f"Отправить всем пользователям?"
     )
     
@@ -1188,10 +1324,39 @@ async def admin_broadcast_text(msg: types.Message, state: FSMContext):
     
     await clean_and_send(msg.chat.id, text, kb.as_markup())
 
+@dp.message(AdminBroadcast.media)
+async def admin_broadcast_media_skip(msg: types.Message, state: FSMContext):
+    if msg.text == "/skip":
+        await state.update_data(media_file_id=None, media_type=None)
+        await state.set_state(AdminBroadcast.confirm)
+        
+        data = await state.get_data()
+        text_preview = data.get('text', '')[:100] + "..." if len(data['text']) > 100 else data['text']
+        
+        text = (
+            f"═══════════════════════════\n"
+            f"<b>ПОДТВЕРЖДЕНИЕ</b>\n"
+            f"═══════════════════════════\n\n"
+            f"<b>Текст:</b>\n{text_preview}\n\n"
+            f"<b>Медиа:</b> Без медиа\n\n"
+            f"Отправить всем пользователям?"
+        )
+        
+        kb = InlineKeyboardBuilder()
+        kb.button(text="[ ОТПРАВИТЬ ]", callback_data="broadcast_confirm_run")
+        kb.button(text="[ ОТМЕНА ]", callback_data="cancel_operation")
+        kb.adjust(1)
+        
+        await clean_and_send(msg.chat.id, text, kb.as_markup())
+    else:
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото, GIF или /skip")
+
 @dp.callback_query(F.data == "broadcast_confirm_run")
 async def admin_broadcast_run(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     text = data['text']
+    media_file_id = data.get('media_file_id')
+    media_type = data.get('media_type')
     
     users = db.get_all_users()
     sent = 0
@@ -1201,15 +1366,23 @@ async def admin_broadcast_run(cb: types.CallbackQuery, state: FSMContext):
     
     for user_id in users:
         try:
-            await bot.send_message(user_id, text)
+            if media_file_id and media_type == 'photo':
+                await bot.send_photo(user_id, media_file_id, caption=text, parse_mode=ParseMode.HTML)
+            elif media_file_id and media_type == 'gif':
+                await bot.send_animation(user_id, media_file_id, caption=text, parse_mode=ParseMode.HTML)
+            elif media_file_id:
+                await bot.send_document(user_id, media_file_id, caption=text, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_message(user_id, text, parse_mode=ParseMode.HTML)
             sent += 1
             await asyncio.sleep(0.5)
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
             failed += 1
     
     result_text = (
         f"═══════════════════════════\n"
-        f"РАССЫЛКА ЗАВЕРШЕНА\n"
+        f"<b>РАССЫЛКА ЗАВЕРШЕНА</b>\n"
         f"═══════════════════════════\n\n"
         f"✅ Отправлено: {sent}\n"
         f"❌ Не удалось: {failed}"

@@ -20,7 +20,7 @@ def mailing_kb(has_accounts=False):
         builder.button(text="[ УПРАВЛЕНИЕ АККАУНТАМИ ]", callback_data="my_accounts")
     else:
         builder.button(text="[ + ДОБАВИТЬ АККАУНТ ]", callback_data="add_account")
-    builder.button(text="[ НАЗАД ]", callback_data="back_main")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -32,14 +32,14 @@ def my_accounts_kb(accounts):
             callback_data=f"account_info_{acc['id']}"
         )
     builder.button(text="[ + ДОБАВИТЬ АККАУНТ ]", callback_data="add_account")
-    builder.button(text="[ НАЗАД ]", callback_data="mailing")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_mailing")
     builder.adjust(1)
     return builder.as_markup()
 
 def account_info_kb(account_id):
     builder = InlineKeyboardBuilder()
     builder.button(text="[ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
-    builder.button(text="[ НАЗАД ]", callback_data="my_accounts")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_my_accounts")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -67,7 +67,7 @@ def accounts_kb(accounts, page=0, per_page=5):
     if nav_buttons:
         builder.row(*nav_buttons)
     
-    builder.button(text="[ НАЗАД ]", callback_data="back_main")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -75,7 +75,7 @@ def profile_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="[ ПОДПИСКА ]", callback_data="subscription_info")
     builder.button(text="[ ИСТОРИЯ ПОКУПОК ]", callback_data="my_purchases")
-    builder.button(text="[ НАЗАД ]", callback_data="back_main")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -84,7 +84,7 @@ def subscription_kb(price, trial_available=False):
     builder.button(text=f"[ КУПИТЬ ЗА {price}⭐ ]", callback_data="buy_subscription")
     if trial_available:
         builder.button(text="[ ПРОБНЫЙ ПЕРИОД ]", callback_data="trial_subscription")
-    builder.button(text="[ НАЗАД ]", callback_data="profile")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_profile")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -96,14 +96,17 @@ def my_mailings_kb(mailings):
             text=f"{status} {m['started'][:16] if m['started'] else 'Новая'}", 
             callback_data=f"mailing_info_{m['id']}"
         )
-    builder.button(text="[ НАЗАД ]", callback_data="mailing")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_mailing")
     builder.adjust(1)
     return builder.as_markup()
 
 def mailing_info_kb(mailing_id):
     builder = InlineKeyboardBuilder()
-    builder.button(text="[ ОБНОВИТЬ ]", callback_data=f"mailing_refresh_{mailing_id}")
-    builder.button(text="[ НАЗАД ]", callback_data="my_mailings")
+    builder.button(text="[ 🔄 ОБНОВИТЬ ]", callback_data=f"mailing_refresh_{mailing_id}")
+    builder.button(text="[ ❌ УДАЛИТЬ ]", callback_data=f"mailing_delete_{mailing_id}")
+    builder.button(text="[ ⏸️ ПАУЗА ]", callback_data=f"mailing_pause_{mailing_id}")
+    builder.button(text="[ ▶️ ВОЗОБНОВИТЬ ]", callback_data=f"mailing_resume_{mailing_id}")
+    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_mailings")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -113,7 +116,7 @@ def admin_kb():
     builder.button(text="[ ДОБАВИТЬ АККАУНТ ]", callback_data="admin_add_account")
     builder.button(text="[ УПРАВЛЕНИЕ ЦЕНАМИ ]", callback_data="admin_prices")
     builder.button(text="[ РАССЫЛКА ВСЕМ ]", callback_data="admin_broadcast")
-    builder.button(text="[ НАЗАД ]", callback_data="back_main")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -123,37 +126,23 @@ def admin_prices_kb():
     builder.button(text="[ ЦЕНА АККАУНТА ]", callback_data="admin_edit_acc_price")
     builder.button(text="[ ПРОБНЫЙ ПЕРИОД ]", callback_data="admin_edit_trial")
     builder.button(text="[ ЛИМИТЫ РАССЫЛКИ ]", callback_data="admin_edit_limits")
-    builder.button(text="[ НАЗАД ]", callback_data="admin")
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_admin")
     builder.adjust(1)
-    return builder.as_markup()
-
-def cancel_kb():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
     return builder.as_markup()
 
 def cancel_only_kb():
     builder = InlineKeyboardBuilder()
-    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
+    builder.button(text="[ ОТМЕНА ]", callback_data="cancel_operation")
     return builder.as_markup()
 
 def back_kb(target):
     builder = InlineKeyboardBuilder()
-    builder.button(text="[ НАЗАД ]", callback_data=f"back_{target}")
+    builder.button(text="[ НАЗАД ]", callback_data=f"back_to_{target}")
     return builder.as_markup()
 
 def confirm_kb(action, data):
     builder = InlineKeyboardBuilder()
     builder.button(text="[ ПОДТВЕРДИТЬ ]", callback_data=f"confirm_{action}_{data}")
-    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def retry_code_kb():
-    """Клавиатура для повторной попытки ввода кода"""
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ ПОПРОБОВАТЬ СНОВА ]", callback_data="retry_code")
-    builder.button(text="[ ЗАПРОСИТЬ НОВЫЙ КОД ]", callback_data="resend_code")
-    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
+    builder.button(text="[ ОТМЕНА ]", callback_data="cancel_operation")
     builder.adjust(1)
     return builder.as_markup()
