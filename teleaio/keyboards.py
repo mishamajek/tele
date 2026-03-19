@@ -132,6 +132,11 @@ def cancel_kb():
     builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
     return builder.as_markup()
 
+def cancel_only_kb():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
+    return builder.as_markup()
+
 def back_kb(target):
     builder = InlineKeyboardBuilder()
     builder.button(text="[ НАЗАД ]", callback_data=f"back_{target}")
@@ -142,9 +147,4 @@ def confirm_kb(action, data):
     builder.button(text="[ ПОДТВЕРДИТЬ ]", callback_data=f"confirm_{action}_{data}")
     builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
     builder.adjust(1)
-    return builder.as_markup()
-
-def cancel_only_kb():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
     return builder.as_markup()

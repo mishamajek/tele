@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, FloodWaitError
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, FloodWaitError, PhoneCodeExpiredError
 import config
 
 logger = logging.getLogger(__name__)
@@ -18,47 +18,67 @@ class SessionManager:
         self.pending_codes = {}
     
     async def create_session(self, user_id, phone, session_path):
-        """Создает новую сессию"""
-        client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-        await client.connect()
-        
-        if await client.is_user_authorized():
-            await client.disconnect()
-            return {"success": False, "error": "Сессия уже авторизована"}
-        
+        """Создает новую сессию и сохраняет клиента для дальнейшего использования"""
         try:
+            # Создаем клиента
+            client = TelegramClient(str(session_path), self.api_id, self.api_hash)
+            await client.connect()
+            
+            # Проверяем, не авторизован ли уже
+            if await client.is_user_authorized():
+                await client.disconnect()
+                return {"success": False, "error": "Сессия уже авторизована"}
+            
+            # Запрашиваем код
             await client.send_code_request(phone)
+            
+            # Сохраняем клиента в pending_codes
             self.pending_codes[user_id] = {
                 'client': client,
                 'phone': phone,
+                'session_path': str(session_path),
                 'step': 'code'
             }
+            
             return {"success": True, "need_code": True}
+            
         except FloodWaitError as e:
-            await client.disconnect()
-            return {"success": False, "error": f"Подождите {e.seconds} сек"}
+            if user_id in self.pending_codes:
+                try:
+                    await self.pending_codes[user_id]['client'].disconnect()
+                except:
+                    pass
+                del self.pending_codes[user_id]
+            return {"success": False, "error": f"Слишком много попыток. Подождите {e.seconds} сек"}
+            
         except Exception as e:
-            await client.disconnect()
+            if user_id in self.pending_codes:
+                try:
+                    await self.pending_codes[user_id]['client'].disconnect()
+                except:
+                    pass
+                del self.pending_codes[user_id]
             logger.error(f"Ошибка создания сессии: {e}")
             return {"success": False, "error": str(e)}
     
     async def submit_code(self, user_id, code):
-        """Отправляет код подтверждения"""
+        """Отправляет код подтверждения, используя тот же клиент"""
         data = self.pending_codes.get(user_id)
         if not data:
-            return {"success": False, "error": "Сессия не найдена"}
+            return {"success": False, "error": "Сессия не найдена. Запросите код заново."}
         
         client = data['client']
         phone = data['phone']
         
         try:
+            # Пытаемся войти с кодом
             await client.sign_in(phone, code)
             
             # Успешный вход
             await client.disconnect()
             del self.pending_codes[user_id]
             
-            return {"success": True, "message": "Аккаунт добавлен"}
+            return {"success": True, "message": "Аккаунт успешно добавлен"}
             
         except SessionPasswordNeededError:
             # Требуется 2FA
@@ -68,10 +88,35 @@ class SessionManager:
         except PhoneCodeInvalidError:
             return {"success": False, "error": "Неверный код"}
             
+        except PhoneCodeExpiredError:
+            # Код истек - нужно запросить новый
+            return {"success": False, "error": "Код истек. Запросите новый код."}
+            
         except Exception as e:
             await client.disconnect()
             del self.pending_codes[user_id]
             logger.error(f"Ошибка проверки кода: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def resend_code(self, user_id):
+        """Запрашивает новый код подтверждения"""
+        data = self.pending_codes.get(user_id)
+        if not data:
+            return {"success": False, "error": "Сессия не найдена"}
+        
+        client = data['client']
+        phone = data['phone']
+        
+        try:
+            # Запрашиваем новый код
+            await client.send_code_request(phone)
+            return {"success": True, "message": "Новый код отправлен"}
+            
+        except FloodWaitError as e:
+            return {"success": False, "error": f"Слишком много попыток. Подождите {e.seconds} сек"}
+            
+        except Exception as e:
+            logger.error(f"Ошибка повторной отправки кода: {e}")
             return {"success": False, "error": str(e)}
     
     async def submit_password(self, user_id, password):
@@ -89,7 +134,7 @@ class SessionManager:
             await client.disconnect()
             del self.pending_codes[user_id]
             
-            return {"success": True, "message": "Аккаунт добавлен"}
+            return {"success": True, "message": "Аккаунт успешно добавлен"}
             
         except Exception as e:
             await client.disconnect()
@@ -163,9 +208,10 @@ class SessionManager:
             return None
     
     def cancel_pending(self, user_id):
-        """Отменяет ожидающую сессию"""
+        """Отменяет ожидающую сессию и освобождает ресурсы"""
         if user_id in self.pending_codes:
             try:
+                # Пытаемся отключить клиента в синхронном режиме
                 loop = asyncio.new_event_loop()
                 loop.run_until_complete(self.pending_codes[user_id]['client'].disconnect())
                 loop.close()

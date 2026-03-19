@@ -1,8 +1,6 @@
 import asyncio
 import logging
 from datetime import datetime
-import random
-from typing import List, Dict
 import json
 
 from database import Database
@@ -31,7 +29,17 @@ class MailingManager:
         mailing_id = self.db.create_mailing(user_id, message_text, targets)
         
         # Добавляем сообщения в очередь
-        self.db.add_to_queue(mailing_id, accounts[0]['id'], targets)
+        # Распределяем цели по аккаунтам
+        account_targets = {}
+        for i, target in enumerate(targets):
+            account = accounts[i % len(accounts)]
+            if account['id'] not in account_targets:
+                account_targets[account['id']] = []
+            account_targets[account['id']].append(target)
+        
+        # Добавляем в очередь для каждого аккаунта
+        for account_id, account_targets_list in account_targets.items():
+            self.db.add_to_queue(mailing_id, account_id, account_targets_list)
         
         # Запускаем обработку
         self.active_mailings[mailing_id] = {
@@ -56,7 +64,6 @@ class MailingManager:
             return
         
         accounts = mailing['accounts']
-        targets = mailing['targets']
         message = mailing['message']
         
         # Получаем настройки
@@ -66,64 +73,54 @@ class MailingManager:
         sent_count = 0
         failed_count = 0
         
-        # Распределяем цели по аккаунтам
-        account_targets = {}
-        for i, target in enumerate(targets):
-            account = accounts[i % len(accounts)]
-            if account['id'] not in account_targets:
-                account_targets[account['id']] = []
-            account_targets[account['id']].append(target)
+        # Получаем все ожидающие сообщения для этой рассылки
+        pending = self.db.get_pending_messages(1000)
+        queue_items = [item for item in pending if item['mailing_id'] == mailing_id]
         
-        # Отправляем сообщения
-        for account_id, account_targets_list in account_targets.items():
-            account = next((a for a in accounts if a['id'] == account_id), None)
+        # Создаем словарь аккаунтов для быстрого доступа
+        accounts_dict = {acc['id']: acc for acc in accounts}
+        
+        for item in queue_items:
+            if not self.running:
+                break
+            
+            account = accounts_dict.get(item['account_id'])
             if not account:
+                self.db.update_queue_status(item['id'], 'failed', 'Аккаунт не найден')
+                failed_count += 1
                 continue
             
-            session_path = account['session_path']
+            # Проверяем лимиты
+            if account['messages_sent_today'] >= max_per_day:
+                self.db.update_queue_status(item['id'], 'failed', 'Лимит на сегодня')
+                failed_count += 1
+                continue
             
-            for target in account_targets_list:
-                if not self.running:
-                    break
-                
-                # Проверяем лимиты
-                if account['messages_sent_today'] >= max_per_day:
-                    logger.warning(f"Аккаунт {account['phone']} достиг лимита на сегодня")
-                    continue
-                
-                # Отправляем сообщение
-                result = await self.session_manager.send_message(session_path, target, message)
-                
-                # Находим соответствующую запись в очереди
-                queue_items = self.db.get_pending_messages(1000)
-                queue_id = None
-                for item in queue_items:
-                    if item['target'] == target and item['account_id'] == account_id:
-                        queue_id = item['id']
-                        break
-                
-                if result['success']:
-                    sent_count += 1
-                    self.db.update_account_last_used(account_id)
-                    if queue_id:
-                        self.db.update_queue_status(queue_id, 'sent')
-                    logger.info(f"✅ Отправлено {target}")
-                else:
-                    failed_count += 1
-                    if queue_id:
-                        self.db.update_queue_status(queue_id, 'failed', result.get('error'))
-                    
-                    # Обработка flood wait
-                    if result.get('error', '').startswith('flood_wait:'):
-                        wait_time = int(result['error'].split(':')[1])
-                        logger.warning(f"Flood wait {wait_time} сек")
-                        await asyncio.sleep(wait_time)
-                
-                # Обновляем статистику рассылки
+            # Отправляем сообщение
+            result = await self.session_manager.send_message(
+                account['session_path'], 
+                item['target'], 
+                message
+            )
+            
+            if result['success']:
+                sent_count += 1
+                self.db.update_account_last_used(account['id'])
+                self.db.update_queue_status(item['id'], 'sent')
                 self.db.update_mailing_status(mailing_id, 'running', sent_count)
+                logger.info(f"✅ Отправлено {item['target']}")
+            else:
+                failed_count += 1
+                self.db.update_queue_status(item['id'], 'failed', result.get('error'))
                 
-                # Задержка между сообщениями
-                await asyncio.sleep(delay)
+                # Обработка flood wait
+                if result.get('error', '').startswith('flood_wait:'):
+                    wait_time = int(result['error'].split(':')[1])
+                    logger.warning(f"Flood wait {wait_time} сек")
+                    await asyncio.sleep(wait_time)
+            
+            # Задержка между сообщениями
+            await asyncio.sleep(delay)
         
         # Завершаем рассылку
         self.db.update_mailing_status(mailing_id, 'completed', sent_count)

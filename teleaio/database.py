@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
 import hashlib
-from config import (  # Импортируем все константы
+from config import (
     DEFAULT_SUBSCRIPTION_PRICE,
     DEFAULT_ACCOUNT_PRICE,
     DEFAULT_TRIAL_HOURS,
@@ -180,6 +180,12 @@ class Database:
             ''', (datetime.now().strftime('%Y-%m-%d'),))
             conn.commit()
     
+    def reset_accounts_daily_messages(self):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('UPDATE user_accounts SET messages_sent_today = 0')
+            conn.commit()
+    
     # === ПОДПИСКИ ===
     def has_active_subscription(self, telegram_id):
         user = self.get_user(telegram_id)
@@ -267,12 +273,6 @@ class Database:
                     total_messages_sent = total_messages_sent + 1
                 WHERE id = ?
             ''', (account_id,))
-            conn.commit()
-    
-    def reset_accounts_daily_messages(self):
-        with self.get_conn() as conn:
-            c = conn.cursor()
-            c.execute('UPDATE user_accounts SET messages_sent_today = 0')
             conn.commit()
     
     def delete_user_account(self, account_id, user_id):

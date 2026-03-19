@@ -110,6 +110,7 @@ async def cmd_start(msg: types.Message):
 @dp.callback_query(F.data == "back_main")
 async def back_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
+    session_manager.cancel_pending(cb.from_user.id)
     text = "═══════════════════════════\nГлавное меню\n═══════════════════════════"
     await cb.answer()
     
@@ -489,19 +490,37 @@ async def add_account_phone(msg: types.Message, state: FSMContext):
     user_id = msg.from_user.id
     session_path = config.SESSIONS_DIR / f"user_{user_id}_{phone.replace('+', '')}.session"
     
+    # Отправляем уведомление о начале процесса
+    wait_msg = await clean_and_send(msg.chat.id, "⏳ Отправляю запрос на код подтверждения...")
+    
     # Запрашиваем код
     result = await session_manager.create_session(user_id, phone, session_path)
     
     if result.get('success'):
         await state.update_data(phone=phone, session_path=str(session_path))
         await state.set_state(AddAccount.code)
-        await clean_and_send(msg.chat.id, 
-                           "📱 Введите код из Telegram:", 
-                           cancel_only_kb())
+        
+        # Удаляем сообщение ожидания
+        await safe_delete_message(msg.chat.id, wait_msg.message_id)
+        
+        # Создаем клавиатуру с возможностью запросить код заново
+        kb = InlineKeyboardBuilder()
+        kb.button(text="[ ЗАПРОСИТЬ НОВЫЙ КОД ]", callback_data="resend_code")
+        kb.button(text="[ ОТМЕНА ]", callback_data="cancel")
+        kb.adjust(1)
+        
+        await clean_and_send(
+            msg.chat.id, 
+            "📱 Введите код из Telegram (код действителен 2 минуты):", 
+            kb.as_markup()
+        )
     else:
-        await clean_and_send(msg.chat.id, 
-                           f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", 
-                           back_kb("mailing"))
+        await safe_delete_message(msg.chat.id, wait_msg.message_id)
+        await clean_and_send(
+            msg.chat.id, 
+            f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", 
+            back_kb("mailing")
+        )
         await state.clear()
 
 @dp.message(AddAccount.code)
@@ -509,7 +528,14 @@ async def add_account_code(msg: types.Message, state: FSMContext):
     code = msg.text.strip()
     user_id = msg.from_user.id
     
+    # Убираем возможные пробелы и дефисы
+    code = code.replace(' ', '').replace('-', '')
+    
+    wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю код...")
+    
     result = await session_manager.submit_code(user_id, code)
+    
+    await safe_delete_message(msg.chat.id, wait_msg.message_id)
     
     if result.get('success'):
         data = await state.get_data()
@@ -522,26 +548,75 @@ async def add_account_code(msg: types.Message, state: FSMContext):
         )
         
         await state.clear()
-        await clean_and_send(msg.chat.id, 
-                           "✅ Аккаунт успешно добавлен!", 
-                           back_kb("mailing"))
+        await clean_and_send(
+            msg.chat.id, 
+            "✅ Аккаунт успешно добавлен!\n\nТеперь вы можете использовать его для рассылки.", 
+            back_kb("mailing")
+        )
         
     elif result.get('need_password'):
         await state.set_state(AddAccount.password)
-        await clean_and_send(msg.chat.id, 
-                           "🔐 Требуется двухфакторная аутентификация.\nВведите пароль:", 
-                           cancel_only_kb())
+        await clean_and_send(
+            msg.chat.id, 
+            "🔐 Требуется двухфакторная аутентификация.\nВведите пароль:", 
+            cancel_only_kb()
+        )
     else:
-        await clean_and_send(msg.chat.id, 
-                           f"❌ Ошибка: {result.get('error', 'Неверный код')}", 
-                           cancel_only_kb())
+        # Ошибка - предлагаем запросить код заново
+        error_msg = result.get('error', 'Неверный код')
+        
+        kb = InlineKeyboardBuilder()
+        kb.button(text="[ ЗАПРОСИТЬ НОВЫЙ КОД ]", callback_data="resend_code")
+        kb.button(text="[ ОТМЕНА ]", callback_data="cancel")
+        kb.adjust(1)
+        
+        await clean_and_send(
+            msg.chat.id, 
+            f"❌ {error_msg}\n\nЗапросить новый код?", 
+            kb.as_markup()
+        )
+
+@dp.callback_query(F.data == "resend_code")
+async def resend_code_cb(cb: types.CallbackQuery, state: FSMContext):
+    user_id = cb.from_user.id
+    
+    await cb.answer("⏳ Запрашиваю новый код...")
+    
+    # Запрашиваем новый код
+    result = await session_manager.resend_code(user_id)
+    
+    if result.get('success'):
+        # Оставляем состояние на code
+        await clean_and_send(
+            cb.message.chat.id,
+            "📱 Новый код отправлен!\nВведите код из Telegram:",
+            cancel_only_kb(),
+            cb.message.message_id
+        )
+    else:
+        # Если ошибка - предлагаем начать заново
+        kb = InlineKeyboardBuilder()
+        kb.button(text="[ НАЧАТЬ ЗАНОВО ]", callback_data="add_account")
+        kb.button(text="[ ОТМЕНА ]", callback_data="cancel")
+        kb.adjust(1)
+        
+        await clean_and_send(
+            cb.message.chat.id,
+            f"❌ {result.get('error', 'Ошибка')}\n\nПопробуйте начать заново:",
+            kb.as_markup(),
+            cb.message.message_id
+        )
 
 @dp.message(AddAccount.password)
 async def add_account_password(msg: types.Message, state: FSMContext):
     password = msg.text.strip()
     user_id = msg.from_user.id
     
+    wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю пароль...")
+    
     result = await session_manager.submit_password(user_id, password)
+    
+    await safe_delete_message(msg.chat.id, wait_msg.message_id)
     
     if result.get('success'):
         data = await state.get_data()
@@ -554,13 +629,17 @@ async def add_account_password(msg: types.Message, state: FSMContext):
         )
         
         await state.clear()
-        await clean_and_send(msg.chat.id, 
-                           "✅ Аккаунт успешно добавлен!", 
-                           back_kb("mailing"))
+        await clean_and_send(
+            msg.chat.id, 
+            "✅ Аккаунт успешно добавлен!\n\nТеперь вы можете использовать его для рассылки.", 
+            back_kb("mailing")
+        )
     else:
-        await clean_and_send(msg.chat.id, 
-                           f"❌ Ошибка: {result.get('error', 'Неверный пароль')}", 
-                           cancel_only_kb())
+        await clean_and_send(
+            msg.chat.id, 
+            f"❌ Ошибка: {result.get('error', 'Неверный пароль')}", 
+            cancel_only_kb()
+        )
 
 @dp.callback_query(F.data.startswith("account_info_"))
 async def account_info_cb(cb: types.CallbackQuery):
@@ -1054,7 +1133,7 @@ async def admin_broadcast_run(cb: types.CallbackQuery, state: FSMContext):
         try:
             await bot.send_message(user_id, text)
             sent += 1
-            await asyncio.sleep(0.5)  # Задержка чтобы не флудить
+            await asyncio.sleep(0.5)
         except:
             failed += 1
     
