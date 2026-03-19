@@ -4,6 +4,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
 import hashlib
+from config import (  # Импортируем все константы
+    DEFAULT_SUBSCRIPTION_PRICE,
+    DEFAULT_ACCOUNT_PRICE,
+    DEFAULT_TRIAL_HOURS,
+    MAX_MESSAGES_PER_DAY,
+    MESSAGE_DELAY
+)
 
 class Database:
     def __init__(self, db_path='database.db'):
