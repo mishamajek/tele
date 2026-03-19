@@ -30,14 +30,19 @@ class SessionManager:
                 return {"success": False, "error": "Сессия уже авторизована"}
             
             # Запрашиваем код
-            await client.send_code_request(phone)
+            result = await client.send_code_request(phone)
+            
+            # Сохраняем информацию о запросе кода
+            phone_code_hash = getattr(result, 'phone_code_hash', None)
             
             # Сохраняем клиента в pending_codes
             self.pending_codes[user_id] = {
                 'client': client,
                 'phone': phone,
                 'session_path': str(session_path),
-                'step': 'code'
+                'step': 'code',
+                'phone_code_hash': phone_code_hash,
+                'created_at': asyncio.get_event_loop().time()
             }
             
             return {"success": True, "need_code": True}
@@ -71,6 +76,9 @@ class SessionManager:
         phone = data['phone']
         
         try:
+            # Очищаем код от лишних символов
+            code = code.strip().replace(' ', '').replace('-', '')
+            
             # Пытаемся войти с кодом
             await client.sign_in(phone, code)
             
@@ -89,7 +97,21 @@ class SessionManager:
             return {"success": False, "error": "Неверный код"}
             
         except PhoneCodeExpiredError:
-            # Код истек - нужно запросить новый
+            # Проверяем, сколько времени прошло
+            elapsed = asyncio.get_event_loop().time() - data.get('created_at', 0)
+            
+            if elapsed < 30:  # Если прошло меньше 30 секунд
+                logger.warning(f"Ложное истечение кода для пользователя {user_id}, прошло {elapsed:.1f} сек")
+                # Пробуем еще раз с принудительной переотправкой
+                try:
+                    # Запрашиваем новый код автоматически
+                    await client.send_code_request(phone)
+                    # Сохраняем обновленное время
+                    self.pending_codes[user_id]['created_at'] = asyncio.get_event_loop().time()
+                    return {"success": False, "error": "Код не подошел. Попробуйте ввести еще раз.", "auto_resend": True}
+                except Exception as e:
+                    pass
+            
             return {"success": False, "error": "Код истек. Запросите новый код."}
             
         except Exception as e:
@@ -109,7 +131,12 @@ class SessionManager:
         
         try:
             # Запрашиваем новый код
-            await client.send_code_request(phone)
+            result = await client.send_code_request(phone)
+            
+            # Обновляем время создания
+            self.pending_codes[user_id]['created_at'] = asyncio.get_event_loop().time()
+            self.pending_codes[user_id]['step'] = 'code'
+            
             return {"success": True, "message": "Новый код отправлен"}
             
         except FloodWaitError as e:

@@ -148,3 +148,12 @@ def confirm_kb(action, data):
     builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
     builder.adjust(1)
     return builder.as_markup()
+
+def retry_code_kb():
+    """Клавиатура для повторной попытки ввода кода"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="[ ПОПРОБОВАТЬ СНОВА ]", callback_data="retry_code")
+    builder.button(text="[ ЗАПРОСИТЬ НОВЫЙ КОД ]", callback_data="resend_code")
+    builder.button(text="[ ОТМЕНА ]", callback_data="cancel")
+    builder.adjust(1)
+    return builder.as_markup()

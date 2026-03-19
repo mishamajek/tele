@@ -4,6 +4,12 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
+import asyncio
+import logging
+import sys
+import os
+from pathlib import Path
+from datetime import datetime
 import json
 
 from aiogram import Bot, Dispatcher, types, F
@@ -55,7 +61,6 @@ class AdminBroadcast(StatesGroup):
 
 # ================== УТИЛИТЫ ==================
 async def clean_and_send(chat_id, text, kb=None, msg_to_delete=None):
-    """Отправляет сообщение и удаляет предыдущее"""
     if msg_to_delete:
         try:
             await bot.delete_message(chat_id, msg_to_delete)
@@ -71,7 +76,6 @@ async def safe_delete_message(chat_id, message_id):
         pass
 
 def format_phone(phone):
-    """Форматирует номер телефона"""
     if phone.startswith('+'):
         return phone
     return f"+{phone}"
@@ -94,7 +98,7 @@ async def cmd_start(msg: types.Message):
     
     text = (
         "═══════════════════════════\n"
-        "     MASSENDER BOT v2.0\n"
+        "         TELEAIO\n"
         "═══════════════════════════\n\n"
         "• Массовая рассылка сообщений\n"
         "• Добавление своих аккаунтов\n"
@@ -103,9 +107,7 @@ async def cmd_start(msg: types.Message):
         "Выберите раздел:"
     )
     
-    kb = main_kb()
-    
-    await clean_and_send(msg.chat.id, text, kb)
+    await clean_and_send(msg.chat.id, text, main_kb())
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(cb: types.CallbackQuery, state: FSMContext):
@@ -113,10 +115,7 @@ async def back_main(cb: types.CallbackQuery, state: FSMContext):
     session_manager.cancel_pending(cb.from_user.id)
     text = "═══════════════════════════\nГлавное меню\n═══════════════════════════"
     await cb.answer()
-    
-    kb = main_kb()
-    
-    await clean_and_send(cb.message.chat.id, text, kb, cb.message.message_id)
+    await clean_and_send(cb.message.chat.id, text, main_kb(), cb.message.message_id)
 
 @dp.callback_query(F.data == "ignore")
 async def ignore_cb(cb: types.CallbackQuery):
@@ -144,11 +143,10 @@ async def help_cb(cb: types.CallbackQuery):
         "🔹 ПОДПИСКА\n"
         "24 часа бесплатно, затем 60⭐ в неделю\n\n"
         "🔹 ПОДДЕРЖКА\n"
-        "По всем вопросам: @admin"
+        "По всем вопросам: @duroveurope"
     )
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, back_kb("main"), cb.message.message_id)
-
 # ================== ПРОФИЛЬ ==================
 @dp.callback_query(F.data == "profile")
 async def profile_cb(cb: types.CallbackQuery):
@@ -273,7 +271,6 @@ async def trial_subscription_cb(cb: types.CallbackQuery):
     
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, back_kb("profile"), cb.message.message_id)
-
 # ================== ПЛАТЕЖИ ==================
 @dp.pre_checkout_query()
 async def pre_checkout_handler(q: types.PreCheckoutQuery):
@@ -285,7 +282,6 @@ async def payment_success_handler(msg: types.Message):
     amount = msg.successful_payment.total_amount
     
     if payload.startswith("subscription_"):
-        # Активация подписки
         user_id = int(payload.replace("subscription_", ""))
         db.activate_subscription(user_id, days=7)
         db.add_purchase(user_id, 'subscription', amount)
@@ -300,7 +296,6 @@ async def payment_success_handler(msg: types.Message):
         )
         
     elif payload.startswith("account_"):
-        # Покупка аккаунта
         parts = payload.split("_")
         account_id = int(parts[1])
         user_id = int(parts[2])
@@ -310,7 +305,6 @@ async def payment_success_handler(msg: types.Message):
             db.buy_sell_account(account_id, user_id)
             db.add_purchase(user_id, 'account', amount, account_id)
             
-            # Отправляем файл сессии пользователю
             if account['file_id']:
                 await bot.send_document(
                     msg.chat.id,
@@ -389,7 +383,6 @@ async def pay_account_cb(cb: types.CallbackQuery):
         ])
     )
     await safe_delete_message(cb.message.chat.id, cb.message.message_id)
-
 # ================== РАССЫЛКА ==================
 @dp.callback_query(F.data == "mailing")
 async def mailing_cb(cb: types.CallbackQuery):
@@ -461,7 +454,6 @@ async def my_accounts_cb(cb: types.CallbackQuery):
 async def add_account_start(cb: types.CallbackQuery, state: FSMContext):
     user_id = cb.from_user.id
     
-    # Проверяем подписку
     if not db.has_active_subscription(user_id):
         await cb.answer("❌ Нужна подписка", show_alert=True)
         return
@@ -490,122 +482,60 @@ async def add_account_phone(msg: types.Message, state: FSMContext):
     user_id = msg.from_user.id
     session_path = config.SESSIONS_DIR / f"user_{user_id}_{phone.replace('+', '')}.session"
     
-    # Отправляем уведомление о начале процесса
     wait_msg = await clean_and_send(msg.chat.id, "⏳ Отправляю запрос на код подтверждения...")
-    
-    # Запрашиваем код
     result = await session_manager.create_session(user_id, phone, session_path)
     
     if result.get('success'):
         await state.update_data(phone=phone, session_path=str(session_path))
         await state.set_state(AddAccount.code)
-        
-        # Удаляем сообщение ожидания
         await safe_delete_message(msg.chat.id, wait_msg.message_id)
-        
-        # Создаем клавиатуру с возможностью запросить код заново
-        kb = InlineKeyboardBuilder()
-        kb.button(text="[ ЗАПРОСИТЬ НОВЫЙ КОД ]", callback_data="resend_code")
-        kb.button(text="[ ОТМЕНА ]", callback_data="cancel")
-        kb.adjust(1)
-        
-        await clean_and_send(
-            msg.chat.id, 
-            "📱 Введите код из Telegram (код действителен 2 минуты):", 
-            kb.as_markup()
-        )
+        await clean_and_send(msg.chat.id, "📱 Введите код из Telegram:", cancel_only_kb())
     else:
         await safe_delete_message(msg.chat.id, wait_msg.message_id)
-        await clean_and_send(
-            msg.chat.id, 
-            f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", 
-            back_kb("mailing")
-        )
+        await clean_and_send(msg.chat.id, f"❌ {result.get('error', 'Ошибка')}", back_kb("mailing"))
         await state.clear()
 
 @dp.message(AddAccount.code)
 async def add_account_code(msg: types.Message, state: FSMContext):
-    code = msg.text.strip()
+    code = msg.text.strip().replace(' ', '').replace('-', '')
     user_id = msg.from_user.id
     
-    # Убираем возможные пробелы и дефисы
-    code = code.replace(' ', '').replace('-', '')
-    
     wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю код...")
-    
     result = await session_manager.submit_code(user_id, code)
-    
     await safe_delete_message(msg.chat.id, wait_msg.message_id)
     
     if result.get('success'):
         data = await state.get_data()
-        
-        # Сохраняем аккаунт в базу
-        db.add_user_account(
-            user_id, 
-            data['phone'], 
-            data['session_path']
-        )
-        
+        db.add_user_account(user_id, data['phone'], data['session_path'])
         await state.clear()
-        await clean_and_send(
-            msg.chat.id, 
-            "✅ Аккаунт успешно добавлен!\n\nТеперь вы можете использовать его для рассылки.", 
-            back_kb("mailing")
-        )
-        
+        await clean_and_send(msg.chat.id, "✅ Аккаунт добавлен!", back_kb("mailing"))
     elif result.get('need_password'):
         await state.set_state(AddAccount.password)
-        await clean_and_send(
-            msg.chat.id, 
-            "🔐 Требуется двухфакторная аутентификация.\nВведите пароль:", 
-            cancel_only_kb()
-        )
+        await clean_and_send(msg.chat.id, "🔐 Введите пароль 2FA:", cancel_only_kb())
     else:
-        # Ошибка - предлагаем запросить код заново
-        error_msg = result.get('error', 'Неверный код')
-        
+        error_msg = result.get('error', 'Ошибка')
         kb = InlineKeyboardBuilder()
-        kb.button(text="[ ЗАПРОСИТЬ НОВЫЙ КОД ]", callback_data="resend_code")
+        if result.get('auto_resend'):
+            kb.button(text="[ ПОПРОБОВАТЬ СНОВА ]", callback_data="retry_code")
+        kb.button(text="[ НОВЫЙ КОД ]", callback_data="resend_code")
         kb.button(text="[ ОТМЕНА ]", callback_data="cancel")
         kb.adjust(1)
-        
-        await clean_and_send(
-            msg.chat.id, 
-            f"❌ {error_msg}\n\nЗапросить новый код?", 
-            kb.as_markup()
-        )
+        await clean_and_send(msg.chat.id, f"❌ {error_msg}\n\nЧто делаем?", kb.as_markup())
+
+@dp.callback_query(F.data == "retry_code")
+async def retry_code_cb(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await clean_and_send(cb.message.chat.id, "📱 Введите код еще раз:", cancel_only_kb(), cb.message.message_id)
 
 @dp.callback_query(F.data == "resend_code")
 async def resend_code_cb(cb: types.CallbackQuery, state: FSMContext):
     user_id = cb.from_user.id
-    
     await cb.answer("⏳ Запрашиваю новый код...")
-    
-    # Запрашиваем новый код
     result = await session_manager.resend_code(user_id)
-    
     if result.get('success'):
-        # Оставляем состояние на code
-        await clean_and_send(
-            cb.message.chat.id,
-            "📱 Новый код отправлен!\nВведите код из Telegram:",
-            cancel_only_kb(),
-            cb.message.message_id
-        )
+        await clean_and_send(cb.message.chat.id, "📱 Новый код отправлен! Введите код:", cancel_only_kb(), cb.message.message_id)
     else:
-        # Если ошибка - предлагаем начать заново
-        kb = InlineKeyboardBuilder()
-        kb.button(text="[ НАЧАТЬ ЗАНОВО ]", callback_data="add_account")
-        kb.button(text="[ ОТМЕНА ]", callback_data="cancel")
-        kb.adjust(1)
-        
-        await clean_and_send(
-            cb.message.chat.id,
-            f"❌ {result.get('error', 'Ошибка')}\n\nПопробуйте начать заново:",
-            kb.as_markup(),
-            cb.message.message_id
-        )
+        await clean_and_send(cb.message.chat.id, f"❌ {result.get('error', 'Ошибка')}", back_kb("mailing"), cb.message.message_id)
 
 @dp.message(AddAccount.password)
 async def add_account_password(msg: types.Message, state: FSMContext):
@@ -613,33 +543,16 @@ async def add_account_password(msg: types.Message, state: FSMContext):
     user_id = msg.from_user.id
     
     wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю пароль...")
-    
     result = await session_manager.submit_password(user_id, password)
-    
     await safe_delete_message(msg.chat.id, wait_msg.message_id)
     
     if result.get('success'):
         data = await state.get_data()
-        
-        # Сохраняем аккаунт в базу
-        db.add_user_account(
-            user_id, 
-            data['phone'], 
-            data['session_path']
-        )
-        
+        db.add_user_account(user_id, data['phone'], data['session_path'])
         await state.clear()
-        await clean_and_send(
-            msg.chat.id, 
-            "✅ Аккаунт успешно добавлен!\n\nТеперь вы можете использовать его для рассылки.", 
-            back_kb("mailing")
-        )
+        await clean_and_send(msg.chat.id, "✅ Аккаунт добавлен!", back_kb("mailing"))
     else:
-        await clean_and_send(
-            msg.chat.id, 
-            f"❌ Ошибка: {result.get('error', 'Неверный пароль')}", 
-            cancel_only_kb()
-        )
+        await clean_and_send(msg.chat.id, f"❌ {result.get('error', 'Неверный пароль')}", cancel_only_kb())
 
 @dp.callback_query(F.data.startswith("account_info_"))
 async def account_info_cb(cb: types.CallbackQuery):
@@ -675,18 +588,14 @@ async def delete_account_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Аккаунт не найден", show_alert=True)
         return
     
-    # Удаляем файл сессии
     try:
         os.remove(account['session_path'])
     except:
         pass
     
-    # Удаляем из базы
     db.delete_user_account(account_id, cb.from_user.id)
-    
     await cb.answer("✅ Аккаунт удален")
     await my_accounts_cb(cb)
-
 # ================== НОВАЯ РАССЫЛКА ==================
 @dp.callback_query(F.data == "new_mailing")
 async def new_mailing_start(cb: types.CallbackQuery, state: FSMContext):
@@ -766,11 +675,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = cb.from_user.id
     
-    result = await mailing_manager.start_mailing(
-        user_id, 
-        data['text'], 
-        data['targets']
-    )
+    result = await mailing_manager.start_mailing(user_id, data['text'], data['targets'])
     
     if result['success']:
         text = (
@@ -787,7 +692,6 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     
     await state.clear()
     await clean_and_send(cb.message.chat.id, text, back_kb("mailing"), cb.message.message_id)
-
 # ================== МОИ РАССЫЛКИ ==================
 @dp.callback_query(F.data == "my_mailings")
 async def my_mailings_cb(cb: types.CallbackQuery):
@@ -917,7 +821,6 @@ async def admin_prices_cb(cb: types.CallbackQuery):
 async def admin_edit_sub_price_cb(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditPrice.waiting_for_price)
     await state.update_data(price_key='subscription_price', price_name='подписки')
-    
     text = "💰 Введите новую цену подписки (в звездах):"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
@@ -926,7 +829,6 @@ async def admin_edit_sub_price_cb(cb: types.CallbackQuery, state: FSMContext):
 async def admin_edit_acc_price_cb(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditPrice.waiting_for_price)
     await state.update_data(price_key='account_price', price_name='аккаунта')
-    
     text = "💰 Введите новую цену аккаунта (в звездах):"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
@@ -935,7 +837,6 @@ async def admin_edit_acc_price_cb(cb: types.CallbackQuery, state: FSMContext):
 async def admin_edit_trial_cb(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditPrice.waiting_for_price)
     await state.update_data(price_key='trial_hours', price_name='пробного периода (часы)')
-    
     text = "⏱ Введите длительность пробного периода (в часах):"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
@@ -947,7 +848,6 @@ async def admin_edit_limits_cb(cb: types.CallbackQuery, state: FSMContext):
     kb.button(text="[ ЗАДЕРЖКА ]", callback_data="admin_edit_delay")
     kb.button(text="[ НАЗАД ]", callback_data="admin_prices")
     kb.adjust(1)
-    
     text = "Выберите что изменить:"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, kb.as_markup(), cb.message.message_id)
@@ -956,7 +856,6 @@ async def admin_edit_limits_cb(cb: types.CallbackQuery, state: FSMContext):
 async def admin_edit_msg_limit_cb(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditPrice.waiting_for_price)
     await state.update_data(price_key='max_messages_per_day', price_name='лимита сообщений в день')
-    
     text = "📊 Введите новый лимит сообщений в день на один аккаунт:"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
@@ -965,7 +864,6 @@ async def admin_edit_msg_limit_cb(cb: types.CallbackQuery, state: FSMContext):
 async def admin_edit_delay_cb(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditPrice.waiting_for_price)
     await state.update_data(price_key='message_delay', price_name='задержки между сообщениями (сек)')
-    
     text = "⏱ Введите задержку между сообщениями (в секундах):"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
@@ -989,7 +887,6 @@ async def edit_price_handler(msg: types.Message, state: FSMContext):
     
     text = f"✅ {name} обновлена на {value}"
     await clean_and_send(msg.chat.id, text, back_kb("admin"))
-
 # ================== ДОБАВЛЕНИЕ АККАУНТОВ (АДМИН) ==================
 @dp.callback_query(F.data == "admin_add_account")
 async def admin_add_account_start(cb: types.CallbackQuery, state: FSMContext):
@@ -1050,11 +947,9 @@ async def admin_add_account_file(msg: types.Message, state: FSMContext):
         await clean_and_send(msg.chat.id, "❌ Файл должен иметь расширение .session")
         return
     
-    # Сохраняем файл
     file_path = config.SESSIONS_DIR / doc.file_name
     await bot.download(doc, destination=file_path)
     
-    # Добавляем в базу
     account_id = db.add_sell_account(phone, doc.file_name, doc.file_id, price, str(file_path))
     
     if account_id:
@@ -1076,7 +971,6 @@ async def admin_add_account_file(msg: types.Message, state: FSMContext):
 @dp.message(AdminAddAccount.file)
 async def admin_add_account_file_invalid(msg: types.Message, state: FSMContext):
     await clean_and_send(msg.chat.id, "❌ Отправьте файл")
-
 # ================== РАССЫЛКА ВСЕМ (АДМИН) ==================
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
@@ -1147,10 +1041,8 @@ async def admin_broadcast_run(cb: types.CallbackQuery, state: FSMContext):
     
     await state.clear()
     await clean_and_send(cb.message.chat.id, result_text, back_kb("admin"), cb.message.message_id)
-
 # ================== ЗАПУСК ==================
 async def on_startup():
-    # Сбрасываем дневные счетчики
     db.reset_daily_messages()
     db.reset_accounts_daily_messages()
     logger.info("✅ Дневные счетчики сброшены")
@@ -1161,8 +1053,7 @@ async def on_shutdown():
 
 async def main():
     await on_startup()
-    logger.info("🚀 MassSender Bot v2.0 запущен")
-    
+    logger.info("🚀 MassSender Bot запущен")
     try:
         await dp.start_polling(bot)
     finally:
