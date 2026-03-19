@@ -3,6 +3,7 @@ from typing import List, Dict, Optional, Tuple
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
+import hashlib
 
 class Database:
     def __init__(self, db_path='database.db'):
@@ -30,20 +31,54 @@ class Database:
                 first_name TEXT,
                 joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 subscription_end TIMESTAMP,
-                trial_used BOOLEAN DEFAULT 0
+                trial_used BOOLEAN DEFAULT 0,
+                daily_messages_sent INTEGER DEFAULT 0,
+                last_message_date TEXT
             )''')
             
-            # Аккаунты (сессии)
-            c.execute('''CREATE TABLE IF NOT EXISTS accounts (
+            # Аккаунты пользователей (которые они добавляют для рассылки)
+            c.execute('''CREATE TABLE IF NOT EXISTS user_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                phone TEXT NOT NULL,
+                session_path TEXT NOT NULL,
+                api_id INTEGER,
+                api_hash TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used TIMESTAMP,
+                messages_sent_today INTEGER DEFAULT 0,
+                total_messages_sent INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+            )''')
+            
+            # Аккаунты для продажи
+            c.execute('''CREATE TABLE IF NOT EXISTS sell_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT UNIQUE NOT NULL,
                 file_name TEXT NOT NULL,
                 file_id TEXT NOT NULL,
                 session_path TEXT,
+                price INTEGER NOT NULL,
                 is_sold BOOLEAN DEFAULT 0,
                 buyer_id INTEGER,
                 purchase_date TIMESTAMP,
+                added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (buyer_id) REFERENCES users(telegram_id)
+            )''')
+            
+            # Рассылки
+            c.execute('''CREATE TABLE IF NOT EXISTS mailings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                message_text TEXT NOT NULL,
+                targets TEXT NOT NULL,
+                accounts_used INTEGER DEFAULT 0,
+                messages_sent INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                started TIMESTAMP,
+                completed TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
             # Покупки
@@ -57,17 +92,32 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Настройки цен (для админа)
+            # Настройки
             c.execute('''CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )''')
             
+            # Очередь сообщений для отправки
+            c.execute('''CREATE TABLE IF NOT EXISTS message_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mailing_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                target TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                sent_date TIMESTAMP,
+                error TEXT,
+                FOREIGN KEY (mailing_id) REFERENCES mailings(id),
+                FOREIGN KEY (account_id) REFERENCES user_accounts(id)
+            )''')
+            
             # Цены по умолчанию
             default_settings = [
-                ('subscription_price', '60'),
-                ('account_price', '50'),
-                ('trial_hours', '24')
+                ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
+                ('account_price', str(DEFAULT_ACCOUNT_PRICE)),
+                ('trial_hours', str(DEFAULT_TRIAL_HOURS)),
+                ('max_messages_per_day', str(MAX_MESSAGES_PER_DAY)),
+                ('message_delay', str(MESSAGE_DELAY))
             ]
             
             for key, value in default_settings:
@@ -101,6 +151,27 @@ class Database:
             c = conn.cursor()
             c.execute('SELECT telegram_id FROM users')
             return [row['telegram_id'] for row in c.fetchall()]
+    
+    def update_daily_messages(self, telegram_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            today = datetime.now().strftime('%Y-%m-%d')
+            c.execute('''
+                UPDATE users 
+                SET daily_messages_sent = daily_messages_sent + 1,
+                    last_message_date = ?
+                WHERE telegram_id = ?
+            ''', (today, telegram_id))
+            conn.commit()
+    
+    def reset_daily_messages(self):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                UPDATE users SET daily_messages_sent = 0
+                WHERE last_message_date < ?
+            ''', (datetime.now().strftime('%Y-%m-%d'),))
+            conn.commit()
     
     # === ПОДПИСКИ ===
     def has_active_subscription(self, telegram_id):
@@ -148,59 +219,222 @@ class Database:
         user = self.get_user(telegram_id)
         return user and not user['trial_used']
     
-    # === АККАУНТЫ ===
-    def add_account(self, phone, file_name, file_id, session_path=None):
+    # === АККАУНТЫ ПОЛЬЗОВАТЕЛЕЙ (для рассылки) ===
+    def add_user_account(self, user_id, phone, session_path, api_id=None, api_hash=None):
         with self.get_conn() as conn:
             try:
                 c = conn.cursor()
                 c.execute('''
-                    INSERT INTO accounts (phone, file_name, file_id, session_path)
-                    VALUES (?, ?, ?, ?)
-                ''', (phone, file_name, file_id, session_path))
+                    INSERT INTO user_accounts (user_id, phone, session_path, api_id, api_hash)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, phone, session_path, api_id, api_hash))
                 conn.commit()
                 return c.lastrowid
             except:
                 return None
     
-    def get_available_accounts(self):
+    def get_user_accounts(self, user_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('''
-                SELECT id, phone, file_name, file_id FROM accounts 
-                WHERE is_sold = 0
-            ''')
+                SELECT * FROM user_accounts 
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY added_date DESC
+            ''', (user_id,))
             return [dict(row) for row in c.fetchall()]
     
-    def get_account(self, account_id):
+    def get_user_account(self, account_id):
         with self.get_conn() as conn:
             c = conn.cursor()
-            c.execute('SELECT * FROM accounts WHERE id = ?', (account_id,))
+            c.execute('SELECT * FROM user_accounts WHERE id = ?', (account_id,))
             row = c.fetchone()
             return dict(row) if row else None
     
-    def buy_account(self, account_id, buyer_id):
+    def update_account_last_used(self, account_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('''
-                UPDATE accounts 
+                UPDATE user_accounts 
+                SET last_used = CURRENT_TIMESTAMP,
+                    messages_sent_today = messages_sent_today + 1,
+                    total_messages_sent = total_messages_sent + 1
+                WHERE id = ?
+            ''', (account_id,))
+            conn.commit()
+    
+    def reset_accounts_daily_messages(self):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('UPDATE user_accounts SET messages_sent_today = 0')
+            conn.commit()
+    
+    def delete_user_account(self, account_id, user_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                DELETE FROM user_accounts 
+                WHERE id = ? AND user_id = ?
+            ''', (account_id, user_id))
+            conn.commit()
+            return c.rowcount > 0
+    
+    # === АККАУНТЫ ДЛЯ ПРОДАЖИ ===
+    def add_sell_account(self, phone, file_name, file_id, price, session_path=None):
+        with self.get_conn() as conn:
+            try:
+                c = conn.cursor()
+                c.execute('''
+                    INSERT INTO sell_accounts (phone, file_name, file_id, session_path, price)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (phone, file_name, file_id, session_path, price))
+                conn.commit()
+                return c.lastrowid
+            except:
+                return None
+    
+    def get_available_sell_accounts(self):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                SELECT id, phone, price FROM sell_accounts 
+                WHERE is_sold = 0
+                ORDER BY added_date DESC
+            ''')
+            return [dict(row) for row in c.fetchall()]
+    
+    def get_sell_account(self, account_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT * FROM sell_accounts WHERE id = ?', (account_id,))
+            row = c.fetchone()
+            return dict(row) if row else None
+    
+    def buy_sell_account(self, account_id, buyer_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                UPDATE sell_accounts 
                 SET is_sold = 1, buyer_id = ?, purchase_date = CURRENT_TIMESTAMP
                 WHERE id = ? AND is_sold = 0
             ''', (buyer_id, account_id))
             conn.commit()
             return c.rowcount > 0
     
-    def delete_account(self, account_id):
+    def delete_sell_account(self, account_id):
         with self.get_conn() as conn:
             c = conn.cursor()
-            c.execute('DELETE FROM accounts WHERE id = ?', (account_id,))
+            c.execute('DELETE FROM sell_accounts WHERE id = ?', (account_id,))
             conn.commit()
             return c.rowcount > 0
     
-    def get_all_accounts(self):
+    def get_all_sell_accounts(self):
         with self.get_conn() as conn:
             c = conn.cursor()
-            c.execute('SELECT * FROM accounts ORDER BY id DESC')
+            c.execute('SELECT * FROM sell_accounts ORDER BY id DESC')
             return [dict(row) for row in c.fetchall()]
+    
+    # === РАССЫЛКИ ===
+    def create_mailing(self, user_id, message_text, targets):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO mailings (user_id, message_text, targets)
+                VALUES (?, ?, ?)
+            ''', (user_id, message_text, json.dumps(targets)))
+            conn.commit()
+            return c.lastrowid
+    
+    def get_mailing(self, mailing_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT * FROM mailings WHERE id = ?', (mailing_id,))
+            row = c.fetchone()
+            return dict(row) if row else None
+    
+    def update_mailing_status(self, mailing_id, status, messages_sent=None):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            if status == 'running' and messages_sent is None:
+                c.execute('''
+                    UPDATE mailings 
+                    SET status = ?, started = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status, mailing_id))
+            elif status == 'completed' or status == 'stopped':
+                c.execute('''
+                    UPDATE mailings 
+                    SET status = ?, completed = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status, mailing_id))
+            elif messages_sent is not None:
+                c.execute('''
+                    UPDATE mailings 
+                    SET messages_sent = ?
+                    WHERE id = ?
+                ''', (messages_sent, mailing_id))
+            else:
+                c.execute('''
+                    UPDATE mailings SET status = ? WHERE id = ?
+                ''', (status, mailing_id))
+            conn.commit()
+    
+    def get_user_mailings(self, user_id, limit=10):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                SELECT * FROM mailings 
+                WHERE user_id = ? 
+                ORDER BY started DESC
+                LIMIT ?
+            ''', (user_id, limit))
+            return [dict(row) for row in c.fetchall()]
+    
+    # === ОЧЕРЕДЬ СООБЩЕНИЙ ===
+    def add_to_queue(self, mailing_id, account_id, targets):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            for target in targets:
+                c.execute('''
+                    INSERT INTO message_queue (mailing_id, account_id, target)
+                    VALUES (?, ?, ?)
+                ''', (mailing_id, account_id, target))
+            conn.commit()
+    
+    def get_pending_messages(self, limit=10):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                SELECT * FROM message_queue 
+                WHERE status = 'pending'
+                ORDER BY id
+                LIMIT ?
+            ''', (limit,))
+            return [dict(row) for row in c.fetchall()]
+    
+    def update_queue_status(self, queue_id, status, error=None):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            if error:
+                c.execute('''
+                    UPDATE message_queue 
+                    SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status, error, queue_id))
+            else:
+                c.execute('''
+                    UPDATE message_queue 
+                    SET status = ?, sent_date = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status, queue_id))
+            conn.commit()
+    
+    def get_queue_stats(self, mailing_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            total = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ?', (mailing_id,)).fetchone()[0]
+            sent = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ? AND status = "sent"', (mailing_id,)).fetchone()[0]
+            failed = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ? AND status = "failed"', (mailing_id,)).fetchone()[0]
+            return {'total': total, 'sent': sent, 'failed': failed}
     
     # === ПОКУПКИ ===
     def add_purchase(self, user_id, item_type, amount, item_id=None):
@@ -246,19 +480,29 @@ class Database:
     def get_stats(self):
         with self.get_conn() as conn:
             c = conn.cursor()
+            
             users = c.execute('SELECT COUNT(*) FROM users').fetchone()[0]
             active_subs = c.execute('''
                 SELECT COUNT(*) FROM users 
                 WHERE subscription_end > CURRENT_TIMESTAMP
             ''').fetchone()[0]
-            accounts_total = c.execute('SELECT COUNT(*) FROM accounts').fetchone()[0]
-            accounts_sold = c.execute('SELECT COUNT(*) FROM accounts WHERE is_sold = 1').fetchone()[0]
+            
+            user_accounts = c.execute('SELECT COUNT(*) FROM user_accounts').fetchone()[0]
+            sell_accounts_total = c.execute('SELECT COUNT(*) FROM sell_accounts').fetchone()[0]
+            sell_accounts_sold = c.execute('SELECT COUNT(*) FROM sell_accounts WHERE is_sold = 1').fetchone()[0]
+            
+            mailings = c.execute('SELECT COUNT(*) FROM mailings').fetchone()[0]
+            messages_sent = c.execute('SELECT COUNT(*) FROM message_queue WHERE status = "sent"').fetchone()[0]
+            
             purchases_total = c.execute('SELECT SUM(amount) FROM purchases').fetchone()[0] or 0
             
             return {
                 'users': users,
                 'active_subs': active_subs,
-                'accounts_total': accounts_total,
-                'accounts_sold': accounts_sold,
+                'user_accounts': user_accounts,
+                'sell_accounts_total': sell_accounts_total,
+                'sell_accounts_sold': sell_accounts_sold,
+                'mailings': mailings,
+                'messages_sent': messages_sent,
                 'purchases_total': purchases_total
             }
