@@ -290,7 +290,8 @@ async def help_cb(cb: types.CallbackQuery):
         f"<b>📱 Добавление аккаунтов:</b>\n"
         f"1. Нажмите 'РАССЫЛКА'\n"
         f"2. 'ДОБАВИТЬ АККАУНТ'\n"
-        f"3. Введите номер и код\n\n"
+        f"3. Введите номер и код\n"
+        f"4. Если есть 2FA, введите пароль\n\n"
         f"<b>📨 Рассылка:</b>\n"
         f"• Текст можно форматировать HTML:\n"
         f"  &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;\n"
@@ -553,7 +554,11 @@ async def add_account_code(msg: types.Message, state: FSMContext):
         await clean_and_send(msg.chat.id, "✅ Аккаунт добавлен!", back_kb("mailing"))
     elif result.get('need_password'):
         await state.set_state(AddAccount.password)
-        await clean_and_send(msg.chat.id, "🔐 Введите пароль 2FA:", cancel_only_kb())
+        await clean_and_send(
+            msg.chat.id, 
+            "🔐 На этом аккаунте включена двухфакторная аутентификация.\n\nВведите пароль 2FA:", 
+            cancel_only_kb()
+        )
     else:
         error_msg = result.get('error', 'Ошибка')
         kb = InlineKeyboardBuilder()
