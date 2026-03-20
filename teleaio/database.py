@@ -30,7 +30,6 @@ class Database:
         with self.get_conn() as conn:
             c = conn.cursor()
             
-            # Пользователи
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE,
@@ -43,7 +42,6 @@ class Database:
                 last_message_date TEXT
             )''')
             
-            # Аккаунты пользователей
             c.execute('''CREATE TABLE IF NOT EXISTS user_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -59,7 +57,6 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Аккаунты для продажи
             c.execute('''CREATE TABLE IF NOT EXISTS sell_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT UNIQUE NOT NULL,
@@ -74,7 +71,6 @@ class Database:
                 FOREIGN KEY (buyer_id) REFERENCES users(telegram_id)
             )''')
             
-            # Рассылки
             c.execute('''CREATE TABLE IF NOT EXISTS mailings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -91,7 +87,16 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Покупки
+            c.execute("PRAGMA table_info(mailings)")
+            columns = [col[1] for col in c.fetchall()]
+            
+            if 'media_file_id' not in columns:
+                c.execute('ALTER TABLE mailings ADD COLUMN media_file_id TEXT')
+            if 'media_type' not in columns:
+                c.execute('ALTER TABLE mailings ADD COLUMN media_type TEXT')
+            if 'total_targets' not in columns:
+                c.execute('ALTER TABLE mailings ADD COLUMN total_targets INTEGER DEFAULT 0')
+            
             c.execute('''CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -102,13 +107,11 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Настройки
             c.execute('''CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )''')
             
-            # Очередь сообщений
             c.execute('''CREATE TABLE IF NOT EXISTS message_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mailing_id INTEGER NOT NULL,
@@ -121,18 +124,6 @@ class Database:
                 FOREIGN KEY (account_id) REFERENCES user_accounts(id)
             )''')
             
-            # Добавляем недостающие колонки
-            c.execute("PRAGMA table_info(mailings)")
-            columns = [col[1] for col in c.fetchall()]
-            
-            if 'media_file_id' not in columns:
-                c.execute('ALTER TABLE mailings ADD COLUMN media_file_id TEXT')
-            if 'media_type' not in columns:
-                c.execute('ALTER TABLE mailings ADD COLUMN media_type TEXT')
-            if 'total_targets' not in columns:
-                c.execute('ALTER TABLE mailings ADD COLUMN total_targets INTEGER DEFAULT 0')
-            
-            # Настройки по умолчанию
             default_settings = [
                 ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
                 ('account_price', str(DEFAULT_ACCOUNT_PRICE)),
@@ -146,7 +137,6 @@ class Database:
             
             conn.commit()
     
-    # === ПОЛЬЗОВАТЕЛИ ===
     def get_user(self, telegram_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -200,12 +190,10 @@ class Database:
             c.execute('UPDATE user_accounts SET messages_sent_today = 0')
             conn.commit()
     
-    # === ПОДПИСКИ ===
     def has_active_subscription(self, telegram_id):
         user = self.get_user(telegram_id)
         if not user or not user['subscription_end']:
             return False
-        
         try:
             end_date = datetime.fromisoformat(user['subscription_end'])
             return end_date > datetime.now()
@@ -234,7 +222,6 @@ class Database:
             user = self.get_user(telegram_id)
             if user and user['trial_used']:
                 return False
-            
             end_date = (datetime.now() + timedelta(hours=24)).isoformat()
             c.execute('''
                 UPDATE users SET subscription_end = ?, trial_used = 1 WHERE telegram_id = ?
@@ -246,7 +233,6 @@ class Database:
         user = self.get_user(telegram_id)
         return user and not user['trial_used']
     
-    # === АККАУНТЫ ПОЛЬЗОВАТЕЛЕЙ ===
     def add_user_account(self, user_id, phone, session_path, api_id=None, api_hash=None):
         with self.get_conn() as conn:
             try:
@@ -312,7 +298,6 @@ class Database:
             conn.commit()
             return c.rowcount > 0
     
-    # === АККАУНТЫ ДЛЯ ПРОДАЖИ ===
     def add_sell_account(self, phone, file_name, file_id, price, session_path=None):
         with self.get_conn() as conn:
             try:
@@ -354,7 +339,6 @@ class Database:
             conn.commit()
             return c.rowcount > 0
     
-    # === РАССЫЛКИ ===
     def create_mailing(self, user_id, message_text, targets, media_file_id=None, media_type=None):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -418,7 +402,6 @@ class Database:
             conn.commit()
             return True
     
-    # === ОЧЕРЕДЬ СООБЩЕНИЙ ===
     def add_to_queue(self, mailing_id, account_id, targets):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -473,7 +456,6 @@ class Database:
             failed = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ? AND status = "failed"', (mailing_id,)).fetchone()[0]
             return {'total': total, 'sent': sent, 'failed': failed}
     
-    # === ПОКУПКИ ===
     def add_purchase(self, user_id, item_type, amount, item_id=None):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -492,7 +474,6 @@ class Database:
             ''', (user_id,))
             return [dict(row) for row in c.fetchall()]
     
-    # === НАСТРОЙКИ ===
     def get_setting(self, key):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -513,26 +494,20 @@ class Database:
             c.execute('SELECT * FROM settings')
             return {row['key']: row['value'] for row in c.fetchall()}
     
-    # === СТАТИСТИКА ===
     def get_stats(self):
         with self.get_conn() as conn:
             c = conn.cursor()
-            
             users = c.execute('SELECT COUNT(*) FROM users').fetchone()[0]
             active_subs = c.execute('''
                 SELECT COUNT(*) FROM users 
                 WHERE subscription_end > CURRENT_TIMESTAMP
             ''').fetchone()[0]
-            
             user_accounts = c.execute('SELECT COUNT(*) FROM user_accounts').fetchone()[0]
             sell_accounts_total = c.execute('SELECT COUNT(*) FROM sell_accounts').fetchone()[0]
             sell_accounts_sold = c.execute('SELECT COUNT(*) FROM sell_accounts WHERE is_sold = 1').fetchone()[0]
-            
             mailings = c.execute('SELECT COUNT(*) FROM mailings').fetchone()[0]
             messages_sent = c.execute('SELECT COUNT(*) FROM message_queue WHERE status = "sent"').fetchone()[0]
-            
             purchases_total = c.execute('SELECT SUM(amount) FROM purchases').fetchone()[0] or 0
-            
             return {
                 'users': users,
                 'active_subs': active_subs,
