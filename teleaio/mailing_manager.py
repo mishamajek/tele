@@ -21,7 +21,13 @@ class MailingManager:
         self.running = True
         self.processing_tasks = {}
     
-    async def start_mailing(self, user_id, mailing_id, message_text, targets, media_file_id=None, media_type=None):
+    def get_active_mailing(self, user_id):
+        return self.db.get_active_mailing(user_id)
+    
+    def is_mailing_active(self, mailing_id):
+        return mailing_id in self.active_mailings
+    
+    async def start_mailing(self, user_id, mailing_id, message_text, targets, media_file_id=None, media_type=None, interval=300):
         accounts = self.db.get_user_accounts(user_id)
         
         if not accounts:
@@ -45,68 +51,61 @@ class MailingManager:
             'media_type': media_type,
             'targets': targets,
             'accounts': accounts,
-            'status': 'running'
+            'status': 'running',
+            'interval': interval,
+            'current_index': 0,
+            'sent_count': 0
         }
         
+        self.db.update_mailing_status(mailing_id, 'running')
+        
         if mailing_id not in self.processing_tasks:
-            task = asyncio.create_task(self._process_mailing(mailing_id))
+            task = asyncio.create_task(self._process_mailing_loop(mailing_id))
             self.processing_tasks[mailing_id] = task
         
         return {"success": True, "mailing_id": mailing_id}
     
-    async def _process_mailing(self, mailing_id):
+    async def _process_mailing_loop(self, mailing_id):
+        """Бесконечный цикл рассылки"""
         try:
-            self.db.update_mailing_status(mailing_id, 'running')
-            
-            mailing = self.active_mailings.get(mailing_id)
-            if not mailing:
-                mailing = self._load_mailing_from_db(mailing_id)
+            while self.running and mailing_id in self.active_mailings:
+                mailing = self.active_mailings.get(mailing_id)
                 if not mailing:
-                    return
-                self.active_mailings[mailing_id] = mailing
-            
-            accounts = mailing['accounts']
-            if not accounts:
-                self.db.update_mailing_status(mailing_id, 'failed')
-                return
-            
-            message = mailing.get('message')
-            media_file_id = mailing.get('media_file_id')
-            media_type = mailing.get('media_type')
-            
-            max_per_day = int(self.db.get_setting('max_messages_per_day') or config.MAX_MESSAGES_PER_DAY)
-            delay = int(self.db.get_setting('message_delay') or config.MESSAGE_DELAY)
-            
-            sent_count = 0
-            failed_count = 0
-            
-            pending = self.db.get_pending_messages(mailing_id, 100)
-            
-            if not pending:
-                self.db.update_mailing_status(mailing_id, 'completed', 0)
-                return
-            
-            accounts_dict = {acc['id']: acc for acc in accounts}
-            
-            for item in pending:
-                if not self.running or mailing_id not in self.active_mailings:
                     break
                 
-                account = accounts_dict.get(item['account_id'])
-                if not account:
-                    self.db.update_queue_status(item['id'], 'failed', 'Аккаунт не найден')
-                    failed_count += 1
-                    continue
+                # Получаем текущие настройки
+                accounts = mailing['accounts']
+                targets = mailing['targets']
+                message = mailing.get('message')
+                media_file_id = mailing.get('media_file_id')
+                media_type = mailing.get('media_type')
+                interval = mailing.get('interval', 300)
+                current_index = mailing.get('current_index', 0)
                 
+                if not accounts:
+                    logger.error(f"Нет аккаунтов для рассылки {mailing_id}")
+                    break
+                
+                # Получаем цель для отправки (циклически)
+                target = targets[current_index % len(targets)]
+                
+                # Выбираем аккаунт (циклически)
+                account = accounts[current_index % len(accounts)]
+                
+                # Проверяем лимиты
+                max_per_day = int(self.db.get_setting('max_messages_per_day') or config.MAX_MESSAGES_PER_DAY)
                 if account['messages_sent_today'] >= max_per_day:
-                    self.db.update_queue_status(item['id'], 'failed', 'Лимит на сегодня')
-                    failed_count += 1
+                    logger.warning(f"Лимит для аккаунта {account['phone']}: {account['messages_sent_today']}/{max_per_day}")
+                    # Переходим к следующему аккаунту
+                    mailing['current_index'] = current_index + 1
+                    await asyncio.sleep(interval)
                     continue
                 
+                # Отправляем сообщение
                 if media_file_id and media_type:
                     result = await self.session_manager.send_media(
                         account['session_path'],
-                        item['target'],
+                        target,
                         message,
                         media_file_id,
                         media_type
@@ -114,56 +113,49 @@ class MailingManager:
                 else:
                     result = await self.session_manager.send_message(
                         account['session_path'], 
-                        item['target'], 
+                        target, 
                         message
                     )
                 
                 if result['success']:
-                    sent_count += 1
+                    # Обновляем статистику
+                    mailing['sent_count'] = mailing.get('sent_count', 0) + 1
                     self.db.update_account_last_used(account['id'])
-                    self.db.update_queue_status(item['id'], 'sent')
-                    self.db.update_mailing_status(mailing_id, 'running', sent_count)
-                else:
-                    failed_count += 1
-                    self.db.update_queue_status(item['id'], 'failed', result.get('error'))
+                    self.db.update_mailing_status(mailing_id, 'running', mailing['sent_count'])
+                    logger.info(f"✅ Отправлено в {target} через {account['phone']}")
                     
+                    # Записываем в очередь как успешное
+                    # Находим запись в очереди
+                    pending = self.db.get_pending_messages(mailing_id, 100)
+                    for item in pending:
+                        if item['target'] == target:
+                            self.db.update_queue_status(item['id'], 'sent')
+                            break
+                else:
+                    logger.error(f"❌ Ошибка отправки {target}: {result.get('error')}")
+                    
+                    # Обработка flood wait
                     if result.get('error', '').startswith('flood_wait:'):
                         wait_time = int(result['error'].split(':')[1])
+                        logger.warning(f"Flood wait {wait_time} сек")
                         await asyncio.sleep(wait_time)
                 
-                await asyncio.sleep(delay)
-            
-            remaining = self.db.get_pending_messages(mailing_id, 1)
-            if not remaining:
-                self.db.update_mailing_status(mailing_id, 'completed', sent_count)
-            else:
-                self.db.update_mailing_status(mailing_id, 'stopped', sent_count)
-            
+                # Увеличиваем индекс
+                mailing['current_index'] = current_index + 1
+                
+                # Ждем интервал перед следующим сообщением
+                await asyncio.sleep(interval)
+                
         except Exception as e:
             logger.error(f"Ошибка в рассылке {mailing_id}: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             if mailing_id in self.active_mailings:
+                self.db.update_mailing_status(mailing_id, 'stopped')
                 del self.active_mailings[mailing_id]
             if mailing_id in self.processing_tasks:
                 del self.processing_tasks[mailing_id]
-    
-    def _load_mailing_from_db(self, mailing_id):
-        mailing = self.db.get_mailing(mailing_id)
-        if not mailing:
-            return None
-        
-        accounts = self.db.get_user_accounts(mailing['user_id'])
-        targets = json.loads(mailing['targets'])
-        
-        return {
-            'user_id': mailing['user_id'],
-            'message': mailing['message_text'],
-            'media_file_id': mailing.get('media_file_id'),
-            'media_type': mailing.get('media_type'),
-            'targets': targets,
-            'accounts': accounts,
-            'status': mailing['status']
-        }
     
     async def stop_mailing(self, mailing_id):
         if mailing_id in self.active_mailings:
@@ -177,6 +169,12 @@ class MailingManager:
             return True
         
         return False
+    
+    async def update_interval(self, mailing_id, interval):
+        if mailing_id in self.active_mailings:
+            self.active_mailings[mailing_id]['interval'] = interval
+            logger.info(f"Интервал рассылки {mailing_id} обновлен на {interval} сек")
+        return True
     
     def shutdown(self):
         self.running = False
