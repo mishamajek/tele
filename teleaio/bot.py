@@ -15,7 +15,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.types import InputMediaPhoto, InputMediaDocument
 
 import config
 from database import Database
@@ -65,8 +64,19 @@ async def clean_and_send(chat_id, text, kb=None, msg_to_delete=None, parse_mode=
             await bot.delete_message(chat_id, msg_to_delete)
         except:
             pass
-    msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode=parse_mode)
-    return msg
+    
+    try:
+        msg = await asyncio.wait_for(
+            bot.send_message(chat_id, text, reply_markup=kb, parse_mode=parse_mode),
+            timeout=10
+        )
+        return msg
+    except asyncio.TimeoutError:
+        logger.error(f"Таймаут отправки сообщения в {chat_id}")
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения: {e}")
+        return None
 
 async def safe_delete_message(chat_id, message_id):
     try:
@@ -180,6 +190,18 @@ async def show_profile(user_id, chat_id, msg_id=None):
     
     accounts = db.get_user_accounts(user_id)
     
+    # Добавляем кнопку админки, если пользователь админ
+    if is_admin(user_id):
+        builder = InlineKeyboardBuilder()
+        builder.button(text="[ АДМИН-ПАНЕЛЬ ]", callback_data="admin")
+        builder.button(text="[ ПОДПИСКА ]", callback_data="subscription_info")
+        builder.button(text="[ ИСТОРИЯ ПОКУПОК ]", callback_data="my_purchases")
+        builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
+        builder.adjust(1)
+        kb = builder.as_markup()
+    else:
+        kb = profile_kb()
+    
     text = (
         f"═══════════════════════════\n"
         f"<b>ПРОФИЛЬ</b>\n"
@@ -194,7 +216,7 @@ async def show_profile(user_id, chat_id, msg_id=None):
         f"═══════════════════════════"
     )
     
-    await clean_and_send(chat_id, text, profile_kb(), msg_id)
+    await clean_and_send(chat_id, text, kb, msg_id)
 
 async def show_my_mailings(user_id, chat_id, msg_id=None):
     """Показывает список рассылок пользователя"""
@@ -595,7 +617,6 @@ async def mailing_resume_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Рассылка не найдена")
         return
     
-    # Проверяем подписку
     if not db.has_active_subscription(cb.from_user.id):
         await cb.answer("❌ Нужна подписка", show_alert=True)
         return
@@ -629,10 +650,7 @@ async def mailing_delete_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Рассылка не найдена", show_alert=True)
         return
     
-    # Останавливаем если запущена
     await mailing_manager.stop_mailing(mailing_id)
-    
-    # Удаляем из БД
     db.delete_mailing(mailing_id)
     
     await cb.answer("✅ Рассылка удалена")
@@ -995,7 +1013,6 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = cb.from_user.id
     
-    # Создаем рассылку в БД
     mailing_id = db.create_mailing(
         user_id, 
         data.get('text'), 
@@ -1004,7 +1021,6 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
         data.get('media_type')
     )
     
-    # Запускаем
     result = await mailing_manager.start_mailing(
         user_id, 
         mailing_id,
@@ -1401,6 +1417,7 @@ async def on_startup():
     logger.info("✅ Дневные счетчики сброшены")
 
 async def on_shutdown():
+    await session_manager.cleanup_clients()
     mailing_manager.shutdown()
     logger.info("👋 Бот остановлен")
 

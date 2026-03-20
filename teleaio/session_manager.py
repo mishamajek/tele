@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 from telethon import TelegramClient
+from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 from telethon.errors import (
     SessionPasswordNeededError, 
     PhoneCodeInvalidError, 
@@ -10,7 +11,8 @@ from telethon.errors import (
     PhoneCodeExpiredError,
     ChatWriteForbiddenError,
     PeerFloodError,
-    UserPrivacyRestrictedError
+    UserPrivacyRestrictedError,
+    RPCError
 )
 import config
 
@@ -24,40 +26,79 @@ class SessionManager:
         self.api_hash = config.TELEGRAM_API_HASH
         self.active_clients = {}
         self.pending_codes = {}
-        self._clients = {}  # Кэш клиентов для быстрой отправки
+        self._clients = {}
     
-    async def _get_client(self, session_path):
+    async def _get_client(self, session_path, create_new=False):
         """Получает или создает клиент для сессии"""
         session_key = str(session_path)
         
-        if session_key not in self._clients:
-            client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-            await client.connect()
-            
-            if not await client.is_user_authorized():
-                await client.disconnect()
+        if create_new or session_key not in self._clients:
+            try:
+                client = TelegramClient(
+                    str(session_path), 
+                    self.api_id, 
+                    self.api_hash,
+                    connection=ConnectionTcpAbridged,
+                    connection_retries=2,
+                    retry_delay=1,
+                    request_retries=3,
+                    flood_sleep_threshold=60,
+                    device_model="Telegram Bot",
+                    system_version="4.16.30",
+                    receive_updates=False,
+                    timeout=10
+                )
+                
+                await client.connect()
+                
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    return None
+                
+                self._clients[session_key] = client
+                logger.info(f"✅ Клиент создан для {session_path}")
+            except Exception as e:
+                logger.error(f"Ошибка создания клиента: {e}")
                 return None
-            
-            self._clients[session_key] = client
         
-        return self._clients[session_key]
+        return self._clients.get(session_key)
     
     async def create_session(self, user_id, phone, session_path):
-        """Создает новую сессию и сохраняет клиента для дальнейшего использования"""
+        """Создает новую сессию"""
         try:
-            # Создаем клиента
-            client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-            await client.connect()
+            if os.path.exists(session_path):
+                try:
+                    os.remove(session_path)
+                except:
+                    pass
             
-            # Проверяем, не авторизован ли уже
+            client = TelegramClient(
+                str(session_path), 
+                self.api_id, 
+                self.api_hash,
+                connection=ConnectionTcpAbridged,
+                connection_retries=2,
+                retry_delay=1,
+                request_retries=3,
+                flood_sleep_threshold=60,
+                timeout=10
+            )
+            
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Таймаут подключения. Проверьте интернет."}
+            
             if await client.is_user_authorized():
                 await client.disconnect()
-                return {"success": False, "error": "Сессия уже авторизована"}
+                return {"success": False, "error": "Аккаунт уже авторизован"}
             
-            # Запрашиваем код
-            result = await client.send_code_request(phone)
+            try:
+                result = await asyncio.wait_for(client.send_code_request(phone), timeout=15)
+            except asyncio.TimeoutError:
+                await client.disconnect()
+                return {"success": False, "error": "Таймаут запроса кода. Проверьте интернет."}
             
-            # Сохраняем клиента в pending_codes
             self.pending_codes[user_id] = {
                 'client': client,
                 'phone': phone,
@@ -89,7 +130,7 @@ class SessionManager:
             return {"success": False, "error": str(e)}
     
     async def submit_code(self, user_id, code):
-        """Отправляет код подтверждения, используя тот же клиент"""
+        """Отправляет код подтверждения"""
         data = self.pending_codes.get(user_id)
         if not data:
             return {"success": False, "error": "Сессия не найдена. Запросите код заново."}
@@ -98,13 +139,13 @@ class SessionManager:
         phone = data['phone']
         
         try:
-            # Очищаем код от лишних символов
             code = code.strip().replace(' ', '').replace('-', '')
             
-            # Пытаемся войти с кодом
-            await client.sign_in(phone, code)
+            try:
+                await asyncio.wait_for(client.sign_in(phone, code), timeout=15)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Таймаут проверки кода. Попробуйте еще раз."}
             
-            # Успешный вход - сохраняем клиент в кэш
             session_key = str(data['session_path'])
             self._clients[session_key] = client
             del self.pending_codes[user_id]
@@ -112,7 +153,6 @@ class SessionManager:
             return {"success": True, "message": "Аккаунт успешно добавлен"}
             
         except SessionPasswordNeededError:
-            # Требуется 2FA
             self.pending_codes[user_id]['step'] = 'password'
             return {"success": True, "need_password": True}
             
@@ -121,15 +161,13 @@ class SessionManager:
             
         except PhoneCodeExpiredError:
             elapsed = asyncio.get_event_loop().time() - data.get('created_at', 0)
-            
             if elapsed < 30:
                 try:
-                    await client.send_code_request(phone)
+                    await asyncio.wait_for(client.send_code_request(phone), timeout=15)
                     self.pending_codes[user_id]['created_at'] = asyncio.get_event_loop().time()
                     return {"success": False, "error": "Код не подошел. Попробуйте ввести еще раз.", "auto_resend": True}
-                except Exception as e:
+                except Exception:
                     pass
-            
             return {"success": False, "error": "Код истек. Запросите новый код."}
             
         except Exception as e:
@@ -141,7 +179,7 @@ class SessionManager:
             return {"success": False, "error": str(e)}
     
     async def resend_code(self, user_id):
-        """Запрашивает новый код подтверждения"""
+        """Запрашивает новый код"""
         data = self.pending_codes.get(user_id)
         if not data:
             return {"success": False, "error": "Сессия не найдена"}
@@ -150,13 +188,14 @@ class SessionManager:
         phone = data['phone']
         
         try:
-            await client.send_code_request(phone)
+            await asyncio.wait_for(client.send_code_request(phone), timeout=15)
             self.pending_codes[user_id]['created_at'] = asyncio.get_event_loop().time()
-            self.pending_codes[user_id]['step'] = 'code'
             return {"success": True, "message": "Новый код отправлен"}
             
         except FloodWaitError as e:
             return {"success": False, "error": f"Слишком много попыток. Подождите {e.seconds} сек"}
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "Таймаут запроса. Проверьте интернет."}
         except Exception as e:
             logger.error(f"Ошибка повторной отправки кода: {e}")
             return {"success": False, "error": str(e)}
@@ -170,15 +209,16 @@ class SessionManager:
         client = data['client']
         
         try:
-            await client.sign_in(password=password)
+            await asyncio.wait_for(client.sign_in(password=password), timeout=15)
             
-            # Успешный вход - сохраняем клиент в кэш
             session_key = str(data['session_path'])
             self._clients[session_key] = client
             del self.pending_codes[user_id]
             
             return {"success": True, "message": "Аккаунт успешно добавлен"}
             
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "Таймаут проверки пароля"}
         except Exception as e:
             await client.disconnect()
             if session_key in self._clients:
@@ -188,104 +228,86 @@ class SessionManager:
             return {"success": False, "error": str(e)}
     
     async def send_message(self, session_path, target, message):
-        """Отправляет сообщение через сессию - исправленная версия"""
+        """Отправляет сообщение через сессию"""
         try:
-            # Получаем клиент
             client = await self._get_client(session_path)
             if not client:
                 return {"success": False, "error": "Сессия недействительна"}
             
-            # Определяем получателя
             try:
-                # Пробуем получить как username или номер
                 if target.startswith('@'):
-                    # Это username
-                    entity = await client.get_entity(target)
+                    entity = target
                 elif target.lstrip('-').isdigit():
-                    # Это ID (может быть с минусом)
                     entity = int(target)
                 else:
-                    # Пробуем как номер телефона
-                    entity = await client.get_entity(target)
-            except ValueError:
-                # Если не получилось, пробуем как есть
-                entity = target
+                    entity = target
+                
+                try:
+                    entity = await client.get_entity(entity)
+                except ValueError:
+                    pass
+                except Exception as e:
+                    return {"success": False, "error": f"Получатель не найден: {target}"}
+                
             except Exception as e:
-                logger.error(f"Ошибка получения сущности {target}: {e}")
-                return {"success": False, "error": f"Получатель не найден: {target}"}
+                return {"success": False, "error": f"Ошибка получателя: {str(e)}"}
             
-            # Отправляем сообщение
             try:
-                await client.send_message(entity, message, parse_mode='html')
+                await asyncio.wait_for(
+                    client.send_message(entity, message, parse_mode='html', link_preview=False),
+                    timeout=10
+                )
                 logger.info(f"✅ Отправлено в {target}")
                 return {"success": True}
+                
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Таймаут отправки"}
             except FloodWaitError as e:
-                logger.warning(f"Flood wait {e.seconds} сек для {target}")
                 return {"success": False, "error": f"flood_wait:{e.seconds}"}
             except ChatWriteForbiddenError:
-                return {"success": False, "error": "Нет прав на отправку в этот чат"}
+                return {"success": False, "error": "Нет прав на отправку"}
             except PeerFloodError:
                 return {"success": False, "error": "Peer flood error"}
             except UserPrivacyRestrictedError:
-                return {"success": False, "error": "Пользователь ограничил получение сообщений"}
+                return {"success": False, "error": "Пользователь ограничил получение"}
             except Exception as e:
-                logger.error(f"Ошибка отправки в {target}: {e}")
+                logger.error(f"Ошибка отправки: {e}")
                 return {"success": False, "error": str(e)}
             
         except Exception as e:
-            logger.error(f"Критическая ошибка отправки: {e}")
+            logger.error(f"Критическая ошибка: {e}")
             return {"success": False, "error": str(e)}
     
     async def send_media(self, session_path, target, caption, file_id, file_type):
-        """Отправляет медиа через сессию"""
-        # Для отправки медиа через Telethon нужно скачать файл
-        # Пока отправляем только текст, если есть
+        """Отправляет медиа"""
         if caption:
             return await self.send_message(session_path, target, caption)
         else:
-            # Отправляем сообщение-заглушку
             return await self.send_message(session_path, target, "📎 Медиафайл")
     
     async def check_session(self, session_path):
-        """Проверяет, действительна ли сессия"""
+        """Проверяет сессию"""
         try:
-            session_key = str(session_path)
-            if session_key in self._clients:
-                client = self._clients[session_key]
-                if await client.is_user_authorized():
-                    return True
+            client = TelegramClient(
+                str(session_path), 
+                self.api_id, 
+                self.api_hash,
+                connection=ConnectionTcpAbridged,
+                timeout=5
+            )
+            try:
+                await asyncio.wait_for(client.connect(), timeout=5)
+            except:
+                return False
             
-            client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-            await client.connect()
             authorized = await client.is_user_authorized()
             await client.disconnect()
             return authorized
         except:
             return False
     
-    async def get_session_info(self, session_path):
-        """Получает информацию о сессии (номер телефона)"""
-        try:
-            client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-            await client.connect()
-            
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                return None
-            
-            me = await client.get_me()
-            await client.disconnect()
-            
-            return {
-                'phone': me.phone,
-                'username': me.username,
-                'first_name': me.first_name
-            }
-        except:
-            return None
-    
     def cancel_pending(self, user_id):
-        """Отменяет ожидающую сессию и освобождает ресурсы"""
+        """Отменяет ожидающую сессию"""
         if user_id in self.pending_codes:
             try:
                 loop = asyncio.new_event_loop()
@@ -296,7 +318,7 @@ class SessionManager:
             del self.pending_codes[user_id]
     
     async def cleanup_clients(self):
-        """Очищает все клиенты (вызывать при остановке)"""
+        """Очищает все клиенты"""
         for session_key, client in self._clients.items():
             try:
                 await client.disconnect()

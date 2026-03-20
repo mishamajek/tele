@@ -1,8 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Монохромный стиль - только черно-белые символы
-
 def main_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="[ РАССЫЛКА ]", callback_data="mailing")
@@ -20,53 +18,6 @@ def mailing_kb(has_accounts=False):
         builder.button(text="[ УПРАВЛЕНИЕ АККАУНТАМИ ]", callback_data="my_accounts")
     else:
         builder.button(text="[ + ДОБАВИТЬ АККАУНТ ]", callback_data="add_account")
-    builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def my_accounts_kb(accounts):
-    builder = InlineKeyboardBuilder()
-    for acc in accounts:
-        builder.button(
-            text=f"[ {acc['phone']} ]", 
-            callback_data=f"account_info_{acc['id']}"
-        )
-    builder.button(text="[ + ДОБАВИТЬ АККАУНТ ]", callback_data="add_account")
-    builder.button(text="[ НАЗАД ]", callback_data="back_to_mailing")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def account_info_kb(account_id):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
-    builder.button(text="[ НАЗАД ]", callback_data="back_to_my_accounts")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def accounts_kb(accounts, page=0, per_page=5):
-    builder = InlineKeyboardBuilder()
-    
-    start = page * per_page
-    end = start + per_page
-    page_accounts = accounts[start:end]
-    
-    for acc in page_accounts:
-        builder.button(
-            text=f"[ +{acc['phone']} ] - {acc['price']}⭐", 
-            callback_data=f"buy_account_{acc['id']}"
-        )
-    
-    # Пагинация
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="<", callback_data=f"accounts_page_{page-1}"))
-    nav_buttons.append(InlineKeyboardButton(text=f"-{page+1}-", callback_data="ignore"))
-    if end < len(accounts):
-        nav_buttons.append(InlineKeyboardButton(text=">", callback_data=f"accounts_page_{page+1}"))
-    
-    if nav_buttons:
-        builder.row(*nav_buttons)
-    
     builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
@@ -110,6 +61,33 @@ def mailing_info_kb(mailing_id):
     builder.adjust(1)
     return builder.as_markup()
 
+def accounts_kb(accounts, page=0, per_page=5):
+    builder = InlineKeyboardBuilder()
+    
+    start = page * per_page
+    end = start + per_page
+    page_accounts = accounts[start:end]
+    
+    for acc in page_accounts:
+        builder.button(
+            text=f"[ +{acc['phone']} ] - {acc['price']}⭐", 
+            callback_data=f"buy_account_{acc['id']}"
+        )
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="<", callback_data=f"accounts_page_{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(text=f"-{page+1}-", callback_data="ignore"))
+    if end < len(accounts):
+        nav_buttons.append(InlineKeyboardButton(text=">", callback_data=f"accounts_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+    
+    builder.button(text="[ НАЗАД ]", callback_data="back_to_main")
+    builder.adjust(1)
+    return builder.as_markup()
+
 def admin_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="[ СТАТИСТИКА ]", callback_data="admin_stats")
@@ -138,11 +116,4 @@ def cancel_only_kb():
 def back_kb(target):
     builder = InlineKeyboardBuilder()
     builder.button(text="[ НАЗАД ]", callback_data=f"back_to_{target}")
-    return builder.as_markup()
-
-def confirm_kb(action, data):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ ПОДТВЕРДИТЬ ]", callback_data=f"confirm_{action}_{data}")
-    builder.button(text="[ ОТМЕНА ]", callback_data="cancel_operation")
-    builder.adjust(1)
     return builder.as_markup()

@@ -43,7 +43,7 @@ class Database:
                 last_message_date TEXT
             )''')
             
-            # Аккаунты пользователей (которые они добавляют для рассылки)
+            # Аккаунты пользователей
             c.execute('''CREATE TABLE IF NOT EXISTS user_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -108,7 +108,7 @@ class Database:
                 value TEXT NOT NULL
             )''')
             
-            # Очередь сообщений для отправки
+            # Очередь сообщений
             c.execute('''CREATE TABLE IF NOT EXISTS message_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mailing_id INTEGER NOT NULL,
@@ -121,7 +121,18 @@ class Database:
                 FOREIGN KEY (account_id) REFERENCES user_accounts(id)
             )''')
             
-            # Цены по умолчанию
+            # Добавляем недостающие колонки
+            c.execute("PRAGMA table_info(mailings)")
+            columns = [col[1] for col in c.fetchall()]
+            
+            if 'media_file_id' not in columns:
+                c.execute('ALTER TABLE mailings ADD COLUMN media_file_id TEXT')
+            if 'media_type' not in columns:
+                c.execute('ALTER TABLE mailings ADD COLUMN media_type TEXT')
+            if 'total_targets' not in columns:
+                c.execute('ALTER TABLE mailings ADD COLUMN total_targets INTEGER DEFAULT 0')
+            
+            # Настройки по умолчанию
             default_settings = [
                 ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
                 ('account_price', str(DEFAULT_ACCOUNT_PRICE)),
@@ -235,7 +246,7 @@ class Database:
         user = self.get_user(telegram_id)
         return user and not user['trial_used']
     
-    # === АККАУНТЫ ПОЛЬЗОВАТЕЛЕЙ (для рассылки) ===
+    # === АККАУНТЫ ПОЛЬЗОВАТЕЛЕЙ ===
     def add_user_account(self, user_id, phone, session_path, api_id=None, api_hash=None):
         with self.get_conn() as conn:
             try:
@@ -343,19 +354,6 @@ class Database:
             conn.commit()
             return c.rowcount > 0
     
-    def delete_sell_account(self, account_id):
-        with self.get_conn() as conn:
-            c = conn.cursor()
-            c.execute('DELETE FROM sell_accounts WHERE id = ?', (account_id,))
-            conn.commit()
-            return c.rowcount > 0
-    
-    def get_all_sell_accounts(self):
-        with self.get_conn() as conn:
-            c = conn.cursor()
-            c.execute('SELECT * FROM sell_accounts ORDER BY id DESC')
-            return [dict(row) for row in c.fetchall()]
-    
     # === РАССЫЛКИ ===
     def create_mailing(self, user_id, message_text, targets, media_file_id=None, media_type=None):
         with self.get_conn() as conn:
@@ -415,9 +413,7 @@ class Database:
     def delete_mailing(self, mailing_id):
         with self.get_conn() as conn:
             c = conn.cursor()
-            # Удаляем из очереди
             c.execute('DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
-            # Удаляем рассылку
             c.execute('DELETE FROM mailings WHERE id = ?', (mailing_id,))
             conn.commit()
             return True
