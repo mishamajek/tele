@@ -113,8 +113,8 @@ async def show_mailing_menu(user_id, chat_id, msg_id=None):
     
     if active_mailing:
         text += f"\n🟢 <b>Активна рассылка #{active_mailing['id']}</b>\n"
-        text += f"Интервал: {active_mailing['interval']} сек\n"
-        text += f"Отправлено: {active_mailing['sent_count']}\n"
+        text += f"Интервал: {active_mailing.get('interval', 300)} сек\n"
+        text += f"Отправлено: {active_mailing.get('messages_sent', 0)}\n"
     
     if accounts:
         text += "\nВы можете запустить новую рассылку\nили управлять аккаунтами"
@@ -210,7 +210,7 @@ async def show_my_mailings(user_id, chat_id, msg_id=None):
     
     if mailings:
         for m in mailings[:10]:
-            status_emoji = "✅" if m['status'] == 'completed' else "⏳" if m['status'] == 'running' else "⏸️"
+            status_emoji = "✅" if m['status'] == 'completed' else "🟢" if m['status'] == 'running' else "⏸️"
             text += f"{status_emoji} <b>ID: {m['id']}</b>\n"
             text += f"   Статус: {m['status']}\n"
             text += f"   Интервал: {m.get('interval', 300)} сек\n"
@@ -306,7 +306,6 @@ async def help_cb(cb: types.CallbackQuery):
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, back_kb("main"), cb.message.message_id)
 
-# ================== ПРОФИЛЬ И ПОДПИСКИ ==================
 @dp.callback_query(F.data == "subscription_info")
 async def subscription_info_cb(cb: types.CallbackQuery):
     user_id = cb.from_user.id
@@ -493,7 +492,6 @@ async def pay_account_cb(cb: types.CallbackQuery):
     )
     await safe_delete_message(cb.message.chat.id, cb.message.message_id)
 
-# ================== ДОБАВЛЕНИЕ АККАУНТОВ ==================
 @dp.callback_query(F.data == "add_account")
 async def add_account_start(cb: types.CallbackQuery, state: FSMContext):
     user_id = cb.from_user.id
@@ -598,7 +596,6 @@ async def add_account_password(msg: types.Message, state: FSMContext):
     else:
         await clean_and_send(msg.chat.id, f"❌ {result.get('error', 'Неверный пароль')}", cancel_only_kb())
 
-# ================== УПРАВЛЕНИЕ АККАУНТАМИ ==================
 @dp.callback_query(F.data.startswith("account_info_"))
 async def account_info_cb(cb: types.CallbackQuery):
     try:
@@ -706,7 +703,6 @@ async def delete_account_cb(cb: types.CallbackQuery):
     await cb.answer("✅ Аккаунт удален")
     await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
 
-# ================== НОВАЯ РАССЫЛКА ==================
 @dp.callback_query(F.data == "new_mailing")
 async def new_mailing_start(cb: types.CallbackQuery, state: FSMContext):
     user_id = cb.from_user.id
@@ -919,7 +915,6 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await clean_and_send(cb.message.chat.id, text, back_kb("mailing"), cb.message.message_id)
 
-# ================== РАССЫЛКИ (ПРОСМОТР И УПРАВЛЕНИЕ) ==================
 @dp.callback_query(F.data.startswith("mailing_info_"))
 async def mailing_info_cb(cb: types.CallbackQuery):
     try:
@@ -1026,8 +1021,6 @@ async def edit_interval_handler(msg: types.Message, state: FSMContext):
     mailing_id = data.get('mailing_id')
     
     db.update_mailing_interval(mailing_id, interval)
-    
-    # Обновляем интервал в активной рассылке
     await mailing_manager.update_interval(mailing_id, interval)
     
     await state.clear()
@@ -1052,7 +1045,6 @@ async def mailing_delete_cb(cb: types.CallbackQuery):
     await cb.answer("✅ Рассылка удалена")
     await show_my_mailings(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
 
-# ================== АДМИНКА ==================
 @dp.callback_query(F.data == "admin")
 async def admin_cb(cb: types.CallbackQuery):
     if not is_admin(cb.from_user.id):

@@ -10,7 +10,8 @@ from telethon.errors import (
     PhoneCodeExpiredError,
     ChatWriteForbiddenError,
     PeerFloodError,
-    UserPrivacyRestrictedError
+    UserPrivacyRestrictedError,
+    AuthKeyUnregisteredError
 )
 import config
 
@@ -130,12 +131,17 @@ class SessionManager:
     
     async def send_message(self, session_path, target, message):
         try:
+            if not os.path.exists(session_path):
+                logger.error(f"Файл сессии не найден: {session_path}")
+                return {"success": False, "error": "Файл сессии не найден"}
+            
             client = TelegramClient(str(session_path), self.api_id, self.api_hash)
             await client.connect()
             
             if not await client.is_user_authorized():
                 await client.disconnect()
-                return {"success": False, "error": "Сессия недействительна"}
+                logger.error(f"Сессия не авторизована: {session_path}")
+                return {"success": False, "error": "Сессия недействительна. Переавторизуйтесь."}
             
             try:
                 if target.startswith('@'):
@@ -147,28 +153,45 @@ class SessionManager:
                 
                 try:
                     entity = await client.get_entity(entity)
-                except:
+                except ValueError:
                     pass
-            except Exception as e:
-                await client.disconnect()
-                return {"success": False, "error": f"Получатель не найден: {target}"}
-            
-            try:
+                except Exception as e:
+                    await client.disconnect()
+                    return {"success": False, "error": f"Ошибка получения получателя: {str(e)}"}
+                
                 await client.send_message(entity, message, parse_mode='html')
                 await client.disconnect()
                 return {"success": True}
+                
             except FloodWaitError as e:
                 await client.disconnect()
                 return {"success": False, "error": f"flood_wait:{e.seconds}"}
+            except ChatWriteForbiddenError:
+                await client.disconnect()
+                return {"success": False, "error": "Нет прав на отправку в этот чат"}
+            except PeerFloodError:
+                await client.disconnect()
+                return {"success": False, "error": "Peer flood error - слишком много запросов"}
+            except UserPrivacyRestrictedError:
+                await client.disconnect()
+                return {"success": False, "error": "Пользователь ограничил получение сообщений"}
+            except AuthKeyUnregisteredError:
+                await client.disconnect()
+                return {"success": False, "error": "Сессия устарела. Удалите аккаунт и добавьте заново"}
             except Exception as e:
                 await client.disconnect()
+                logger.error(f"Ошибка отправки: {e}")
                 return {"success": False, "error": str(e)}
                 
         except Exception as e:
+            logger.error(f"Критическая ошибка: {e}")
             return {"success": False, "error": str(e)}
     
     async def send_media(self, session_path, target, caption, file_id, file_type):
-        return await self.send_message(session_path, target, caption or "📎 Медиа")
+        if caption:
+            return await self.send_message(session_path, target, caption)
+        else:
+            return await self.send_message(session_path, target, "📎 Медиа")
     
     def cancel_pending(self, user_id):
         if user_id in self.pending_codes:
