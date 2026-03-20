@@ -514,14 +514,8 @@ async def pay_account_cb(cb: types.CallbackQuery):
     await safe_delete_message(cb.message.chat.id, cb.message.message_id)
 
 # ================== РАССЫЛКИ ==================
-@dp.callback_query(F.data.startswith("mailing_info_"))
-async def mailing_info_cb(cb: types.CallbackQuery):
-    try:
-        mailing_id = int(cb.data.replace("mailing_info_", ""))
-    except ValueError:
-        await cb.answer("❌ Неверный формат")
-        return
-    
+async def mailing_info_cb_with_id(cb: types.CallbackQuery, mailing_id: int):
+    """Показывает информацию о рассылке по ID"""
     mailing = db.get_mailing(mailing_id)
     
     if not mailing or mailing['user_id'] != cb.from_user.id:
@@ -530,7 +524,7 @@ async def mailing_info_cb(cb: types.CallbackQuery):
     
     stats = db.get_queue_stats(mailing_id)
     
-    media_type = "📷 Фото" if mailing['media_type'] == 'photo' else "🎞 GIF" if mailing['media_type'] == 'gif' else "📝 Текст"
+    media_type = "📷 Фото" if mailing.get('media_type') == 'photo' else "🎞 GIF" if mailing.get('media_type') == 'gif' else "📝 Текст"
     
     text = (
         f"═══════════════════════════\n"
@@ -543,11 +537,23 @@ async def mailing_info_cb(cb: types.CallbackQuery):
         f"❌ Ошибок: {stats['failed']}\n"
         f"Начало: {mailing['started'] or '—'}\n"
         f"Завершение: {mailing['completed'] or '—'}\n\n"
-        f"Текст:\n<blockquote>{mailing['message_text'][:200]}</blockquote>\n" if mailing['message_text'] else ""
     )
+    
+    if mailing.get('message_text'):
+        text += f"Текст:\n<blockquote>{mailing['message_text'][:200]}</blockquote>\n"
     
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, mailing_info_kb(mailing_id), cb.message.message_id)
+
+@dp.callback_query(F.data.startswith("mailing_info_"))
+async def mailing_info_cb(cb: types.CallbackQuery):
+    try:
+        mailing_id = int(cb.data.replace("mailing_info_", ""))
+    except ValueError:
+        await cb.answer("❌ Неверный формат")
+        return
+    
+    await mailing_info_cb_with_id(cb, mailing_id)
 
 @dp.callback_query(F.data.startswith("mailing_refresh_"))
 async def mailing_refresh_cb(cb: types.CallbackQuery):
@@ -557,8 +563,7 @@ async def mailing_refresh_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Неверный формат")
         return
     
-    cb.data = f"mailing_info_{mailing_id}"
-    await mailing_info_cb(cb)
+    await mailing_info_cb_with_id(cb, mailing_id)
 
 @dp.callback_query(F.data.startswith("mailing_pause_"))
 async def mailing_pause_cb(cb: types.CallbackQuery):
@@ -575,8 +580,7 @@ async def mailing_pause_cb(cb: types.CallbackQuery):
     else:
         await cb.answer("❌ Не удалось приостановить", show_alert=True)
     
-    cb.data = f"mailing_info_{mailing_id}"
-    await mailing_info_cb(cb)
+    await mailing_info_cb_with_id(cb, mailing_id)
 
 @dp.callback_query(F.data.startswith("mailing_resume_"))
 async def mailing_resume_cb(cb: types.CallbackQuery):
@@ -599,19 +603,18 @@ async def mailing_resume_cb(cb: types.CallbackQuery):
     result = await mailing_manager.start_mailing(
         mailing['user_id'],
         mailing_id,
-        mailing['message_text'],
+        mailing.get('message_text'),
         json.loads(mailing['targets']),
-        mailing['media_file_id'],
-        mailing['media_type']
+        mailing.get('media_file_id'),
+        mailing.get('media_type')
     )
     
     if result['success']:
         await cb.answer("✅ Рассылка возобновлена")
     else:
-        await cb.answer("❌ Не удалось возобновить", show_alert=True)
+        await cb.answer(f"❌ {result.get('error', 'Ошибка')}", show_alert=True)
     
-    cb.data = f"mailing_info_{mailing_id}"
-    await mailing_info_cb(cb)
+    await mailing_info_cb_with_id(cb, mailing_id)
 
 @dp.callback_query(F.data.startswith("mailing_delete_"))
 async def mailing_delete_cb(cb: types.CallbackQuery):
@@ -898,7 +901,7 @@ async def new_mailing_text(msg: types.Message, state: FSMContext):
     
     await clean_and_send(msg.chat.id, text, cancel_only_kb())
 
-@dp.message(NewMailing.media, F.photo | F.document | F.animation)
+@dp.message(NewMailing.media, F.photo | F.animation | F.document)
 async def new_mailing_media(msg: types.Message, state: FSMContext):
     media_file_id = None
     media_type = None
