@@ -286,11 +286,11 @@ async def help_cb(cb: types.CallbackQuery):
         f"4. Если есть 2FA, введите пароль\n\n"
         f"<b>📨 Рассылка:</b>\n"
         f"• Придумайте название для рассылки\n"
-        f"• Текст можно форматировать HTML:\n"
-        f"  &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;\n"
+        f"• Текст можно форматировать (жирный, курсив, моно, цитата и т.д.)\n"
         f"• Можно прикрепить фото\n"
         f"• Рекомендуемый интервал: 300+ секунд\n"
         f"• Рассылка идет бесконечно по кругу\n"
+        f"• Все сообщения отправляются одновременно\n"
         f"• Получатели: username или номер\n\n"
         f"<b>⚙️ Управление:</b>\n"
         f"• Мои рассылки - просмотр, остановка, изменение интервала и названия\n"
@@ -678,11 +678,11 @@ async def new_mailing_name(msg: types.Message, state: FSMContext):
         f"═══════════════════════════\n\n"
         f"Шаг 2/5\n\n"
         f"Отправьте <b>текст</b> для рассылки.\n\n"
-        f"<b>Форматирование HTML:</b>\n"
-        f"• &lt;b&gt;жирный&lt;/b&gt;\n"
-        f"• &lt;i&gt;курсив&lt;/i&gt;\n"
-        f"• &lt;u&gt;подчеркнутый&lt;/u&gt;\n"
-        f"• &lt;code&gt;моно&lt;/code&gt;\n\n"
+        f"<b>Форматирование сохраняется:</b>\n"
+        f"• Жирный, курсив, подчеркнутый\n"
+        f"• Моноширинный текст\n"
+        f"• Цитаты и спойлеры\n"
+        f"• Любое другое форматирование Telegram\n\n"
         f"Или отправьте /skip, чтобы пропустить текст"
     )
     
@@ -693,23 +693,26 @@ async def new_mailing_text(msg: types.Message, state: FSMContext):
     if msg.text == "/skip":
         await state.update_data(text=None)
     else:
-        await state.update_data(text=msg.text)
+        # Сохраняем текст с HTML-форматированием
+        text = msg.html_text if msg.html_text else msg.text
+        await state.update_data(text=text)
     
     await state.set_state(NewMailing.media)
     
     data = await state.get_data()
     name = data.get('name', 'Без названия')
     
-    text = (
+    text_msg = (
         f"═══════════════════════════\n"
         f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
         f"═══════════════════════════\n\n"
         f"Шаг 3/5\n\n"
         f"Отправьте <b>фото</b> (опционально)\n\n"
+        f"Текст к фото также сохранит форматирование.\n\n"
         f"Или отправьте /skip, чтобы продолжить без фото"
     )
     
-    await clean_and_send(msg.chat.id, text, cancel_only_kb())
+    await clean_and_send(msg.chat.id, text_msg, cancel_only_kb())
 
 @dp.message(NewMailing.media, F.photo | F.document)
 async def new_mailing_media(msg: types.Message, state: FSMContext):
@@ -719,9 +722,16 @@ async def new_mailing_media(msg: types.Message, state: FSMContext):
     if msg.photo:
         media_file_id = msg.photo[-1].file_id
         media_type = 'photo'
+        # Если есть подпись к фото, сохраняем её как текст с форматированием
+        if msg.caption:
+            caption = msg.html_caption if msg.html_caption else msg.caption
+            await state.update_data(text=caption)
     elif msg.document and msg.document.mime_type in ['image/jpeg', 'image/png', 'image/jpg']:
         media_file_id = msg.document.file_id
         media_type = 'photo'
+        if msg.caption:
+            caption = msg.html_caption if msg.html_caption else msg.caption
+            await state.update_data(text=caption)
     
     if media_file_id:
         await state.update_data(media_file_id=media_file_id, media_type=media_type)
