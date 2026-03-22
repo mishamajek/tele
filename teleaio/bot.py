@@ -475,7 +475,9 @@ async def add_account_code(msg: types.Message, state: FSMContext):
         await state.set_state(AddAccount.password)
         await clean_and_send(
             msg.chat.id, 
-            "🔐 На этом аккаунте включена двухфакторная аутентификация.\n\nВведите пароль 2FA:", 
+            "🔐 <b>На этом аккаунте включена двухфакторная аутентификация (2FA)</b>\n\n"
+            "Введите облачный пароль для завершения авторизации.\n\n"
+            "Если вы не знаете пароль, обратитесь к администратору.",
             cancel_only_kb()
         )
     else:
@@ -508,7 +510,7 @@ async def add_account_password(msg: types.Message, state: FSMContext):
     password = msg.text.strip()
     user_id = msg.from_user.id
     
-    wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю пароль...")
+    wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю пароль 2FA...")
     result = await session_manager.submit_password(user_id, password)
     await safe_delete_message(msg.chat.id, wait_msg.message_id)
     
@@ -516,9 +518,33 @@ async def add_account_password(msg: types.Message, state: FSMContext):
         data = await state.get_data()
         db.add_user_account(user_id, data['phone'], data['session_path'])
         await state.clear()
-        await clean_and_send(msg.chat.id, "✅ Аккаунт добавлен!", back_kb("mailing"))
+        await clean_and_send(
+            msg.chat.id, 
+            "✅ Аккаунт успешно добавлен! (с поддержкой 2FA)", 
+            back_kb("mailing")
+        )
     else:
-        await clean_and_send(msg.chat.id, f"❌ {result.get('error', 'Неверный пароль')}", cancel_only_kb())
+        error_msg = result.get('error', 'Неверный пароль')
+        kb = InlineKeyboardBuilder()
+        kb.button(text="[ 🔑 ПОВТОРИТЬ ВВОД ПАРОЛЯ ]", callback_data="retry_password")
+        kb.button(text="[ ❌ ОТМЕНА ]", callback_data="cancel_operation")
+        kb.adjust(1)
+        await clean_and_send(
+            msg.chat.id, 
+            f"❌ {error_msg}\n\nПопробуйте ввести пароль еще раз:", 
+            kb.as_markup()
+        )
+
+@dp.callback_query(F.data == "retry_password")
+async def retry_password_cb(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.set_state(AddAccount.password)
+    await clean_and_send(
+        cb.message.chat.id,
+        "🔐 Введите облачный пароль еще раз:",
+        cancel_only_kb(),
+        cb.message.message_id
+    )
 
 @dp.callback_query(F.data.startswith("account_info_"))
 async def account_info_cb(cb: types.CallbackQuery):
@@ -534,7 +560,27 @@ async def account_info_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Аккаунт не найден", show_alert=True)
         return
     
-    await clean_and_send(cb.message.chat.id, f"Информация об аккаунте {account['phone']}", account_info_kb(account_id), cb.message.message_id)
+    text = (
+        f"═══════════════════════════\n"
+        f"<b>АККАУНТ {account['phone']}</b>\n"
+        f"═══════════════════════════\n\n"
+        f"📱 Номер: <code>{account['phone']}</code>\n"
+        f"📅 Добавлен: {account['added_date'][:16]}\n"
+        f"📊 Всего отправлено: {account['total_messages_sent']}\n"
+        f"📈 Отправлено сегодня: {account['messages_sent_today']}\n"
+        f"⏱ Последнее использование: {account['last_used'] or '—'}\n"
+        f"✅ Статус: {'Активен' if account['is_active'] else 'Неактивен'}\n"
+    )
+    
+    builder = InlineKeyboardBuilder()
+    if account['is_active']:
+        builder.button(text="[ 🚪 ВЫЙТИ ]", callback_data=f"logout_account_{account_id}")
+    builder.button(text="[ ❌ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
+    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_accounts")
+    builder.adjust(1)
+    
+    await cb.answer()
+    await clean_and_send(cb.message.chat.id, text, builder.as_markup(), cb.message.message_id)
 
 @dp.callback_query(F.data.startswith("logout_account_"))
 async def logout_account_cb(cb: types.CallbackQuery):
