@@ -294,7 +294,8 @@ async def help_cb(cb: types.CallbackQuery):
         f"• Получатели: username или номер\n\n"
         f"<b>⚙️ Управление:</b>\n"
         f"• Мои рассылки - просмотр, остановка, изменение интервала и названия\n"
-        f"• Профиль - подписка и история/n/n Если у вас возникли проблемы или есть дополнителььные вопросы, то пишите: @duroveurope"
+        f"• Профиль - подписка и история\n\n"
+        f"• Если возникли проблемы или появились дополнительные вопросы, то пишите: @duroveurope"
     )
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, back_kb("main"), cb.message.message_id)
