@@ -578,32 +578,12 @@ async def account_info_cb(cb: types.CallbackQuery):
     )
     
     builder = InlineKeyboardBuilder()
-    if account['is_active']:
-        builder.button(text="[ 🚪 ВЫЙТИ ]", callback_data=f"logout_account_{account_id}")
     builder.button(text="[ ❌ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
     builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_accounts")
     builder.adjust(1)
     
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, builder.as_markup(), cb.message.message_id)
-
-@dp.callback_query(F.data.startswith("logout_account_"))
-async def logout_account_cb(cb: types.CallbackQuery):
-    try:
-        account_id = int(cb.data.replace("logout_account_", ""))
-    except ValueError:
-        await cb.answer("❌ Неверный формат")
-        return
-    
-    account = db.get_user_account(account_id)
-    
-    if not account or account['user_id'] != cb.from_user.id:
-        await cb.answer("❌ Аккаунт не найден", show_alert=True)
-        return
-    
-    db.deactivate_account(account_id)
-    await cb.answer(f"✅ Выход выполнен")
-    await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
 
 @dp.callback_query(F.data.startswith("delete_account_"))
 async def delete_account_cb(cb: types.CallbackQuery):
@@ -954,11 +934,6 @@ async def mailing_resume_cb(cb: types.CallbackQuery):
     
     if not db.has_active_subscription(cb.from_user.id):
         await cb.answer("❌ Нужна подписка", show_alert=True)
-        return
-    
-    pending = db.get_pending_messages(mailing_id, 1)
-    if not pending:
-        await cb.answer("❌ Нет сообщений для отправки. Создайте новую рассылку.", show_alert=True)
         return
     
     result = await mailing_manager.resume_mailing(mailing_id)

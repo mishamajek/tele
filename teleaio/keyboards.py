@@ -85,14 +85,6 @@ def my_accounts_kb(accounts):
     builder.adjust(1)
     return builder.as_markup()
 
-def account_info_kb(account_id):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ 🚪 ВЫЙТИ ]", callback_data=f"logout_account_{account_id}")
-    builder.button(text="[ ❌ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
-    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_accounts")
-    builder.adjust(1)
-    return builder.as_markup()
-
 def admin_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="[ СТАТИСТИКА ]", callback_data="admin_stats")

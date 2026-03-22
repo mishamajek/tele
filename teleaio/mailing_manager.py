@@ -41,22 +41,22 @@ class MailingManager:
         mailing_info = self.db.get_mailing(mailing_id)
         name = mailing_info.get('name', 'Без названия') if mailing_info else 'Без названия'
         
-        pending = self.db.get_pending_messages(mailing_id, 1)
+        # Всегда создаем очередь для бесконечной рассылки
+        account_targets = {}
+        for i, target in enumerate(targets):
+            account = accounts[i % len(accounts)]
+            if account['id'] not in account_targets:
+                account_targets[account['id']] = []
+            account_targets[account['id']].append(target)
         
-        if not pending:
-            account_targets = {}
-            for i, target in enumerate(targets):
-                account = accounts[i % len(accounts)]
-                if account['id'] not in account_targets:
-                    account_targets[account['id']] = []
-                account_targets[account['id']].append(target)
-            
-            for account_id, account_targets_list in account_targets.items():
-                self.db.add_to_queue(mailing_id, account_id, account_targets_list)
+        # Очищаем старую очередь если была
+        self.db.clear_queue(mailing_id)
+        
+        for account_id, account_targets_list in account_targets.items():
+            self.db.add_to_queue(mailing_id, account_id, account_targets_list)
         
         mailing = self.db.get_mailing(mailing_id)
         sent_count = mailing['messages_sent'] if mailing else 0
-        current_index = sent_count % len(targets) if targets else 0
         
         self.active_mailings[mailing_id] = {
             'user_id': user_id,
@@ -68,7 +68,7 @@ class MailingManager:
             'accounts': accounts,
             'status': 'running',
             'interval': interval,
-            'current_index': current_index,
+            'current_index': 0,
             'sent_count': sent_count
         }
         
@@ -80,18 +80,13 @@ class MailingManager:
         if mailing_id not in self.processing_tasks:
             task = asyncio.create_task(self._process_mailing_loop(mailing_id))
             self.processing_tasks[mailing_id] = task
-            logger.info(f"✅ Запущена рассылка {mailing_id} - '{name}'")
+            logger.info(f"✅ Запущена бесконечная рассылка {mailing_id} - '{name}'")
         
         return {"success": True, "mailing_id": mailing_id}
     
     async def resume_mailing(self, mailing_id):
         if mailing_id in self.paused_mailings:
             data = self.paused_mailings[mailing_id]
-            
-            pending = self.db.get_pending_messages(mailing_id, 1)
-            if not pending:
-                logger.warning(f"Нет сообщений в очереди для рассылки {mailing_id}")
-                return {"success": False, "error": "Нет сообщений для отправки"}
             
             self.active_mailings[mailing_id] = data
             del self.paused_mailings[mailing_id]
@@ -132,11 +127,7 @@ class MailingManager:
                     logger.error(f"Нет целей для рассылки {mailing_id}")
                     break
                 
-                pending = self.db.get_pending_messages(mailing_id, 1)
-                if not pending:
-                    logger.info(f"Нет сообщений в очереди для рассылки {mailing_id}")
-                    break
-                
+                # Получаем цель по кругу (даже если 1 получатель)
                 target = targets[current_index % len(targets)]
                 account = accounts[current_index % len(accounts)]
                 
@@ -147,7 +138,7 @@ class MailingManager:
                     await asyncio.sleep(interval)
                     continue
                 
-                logger.info(f"📤 Отправка в {target} через {account['phone']} (рассылка: {name})")
+                logger.info(f"📤 Отправка в {target} через {account['phone']} (рассылка: {name}, цикл: {current_index // len(targets) + 1})")
                 
                 try:
                     if media_file_id and media_type:
@@ -174,6 +165,7 @@ class MailingManager:
                         self.db.update_mailing_status(mailing_id, 'running', sent_count)
                         logger.info(f"✅ Отправлено в {target} (всего: {sent_count})")
                         
+                        # Обновляем статус в очереди
                         pending_items = self.db.get_pending_messages(mailing_id, 100)
                         for item in pending_items:
                             if item['target'] == target:

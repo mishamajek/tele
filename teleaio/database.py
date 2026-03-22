@@ -28,6 +28,7 @@ class Database:
         with self.get_conn() as conn:
             c = conn.cursor()
             
+            # Пользователи
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE,
@@ -40,6 +41,7 @@ class Database:
                 last_message_date TEXT
             )''')
             
+            # Аккаунты пользователей
             c.execute('''CREATE TABLE IF NOT EXISTS user_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -53,6 +55,7 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
+            # Рассылки
             c.execute('''CREATE TABLE IF NOT EXISTS mailings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -71,6 +74,7 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
+            # Проверяем и добавляем колонки
             c.execute("PRAGMA table_info(mailings)")
             columns = [col[1] for col in c.fetchall()]
             
@@ -85,6 +89,7 @@ class Database:
             if 'interval' not in columns:
                 c.execute('ALTER TABLE mailings ADD COLUMN interval INTEGER DEFAULT 300')
             
+            # Покупки (только подписки)
             c.execute('''CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -94,11 +99,13 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
+            # Настройки
             c.execute('''CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )''')
             
+            # Очередь сообщений
             c.execute('''CREATE TABLE IF NOT EXISTS message_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mailing_id INTEGER NOT NULL,
@@ -111,6 +118,7 @@ class Database:
                 FOREIGN KEY (account_id) REFERENCES user_accounts(id)
             )''')
             
+            # Настройки по умолчанию
             default_settings = [
                 ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
                 ('trial_hours', str(DEFAULT_TRIAL_HOURS)),
@@ -367,6 +375,12 @@ class Database:
                     INSERT INTO message_queue (mailing_id, account_id, target)
                     VALUES (?, ?, ?)
                 ''', (mailing_id, account_id, target))
+            conn.commit()
+    
+    def clear_queue(self, mailing_id):
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
             conn.commit()
     
     def get_pending_messages(self, mailing_id=None, limit=10):
