@@ -466,12 +466,15 @@ async def add_account_code(msg: types.Message, state: FSMContext):
     result = await session_manager.submit_code(user_id, code)
     await safe_delete_message(msg.chat.id, wait_msg.message_id)
     
+    logger.info(f"Результат submit_code: {result}")
+    
     if result.get('success'):
         data = await state.get_data()
         db.add_user_account(user_id, data['phone'], data['session_path'])
         await state.clear()
         await clean_and_send(msg.chat.id, "✅ Аккаунт добавлен!", back_kb("mailing"))
     elif result.get('need_password'):
+        logger.info(f"Запрашиваю пароль 2FA у пользователя {user_id}")
         await state.set_state(AddAccount.password)
         await clean_and_send(
             msg.chat.id, 
@@ -513,6 +516,8 @@ async def add_account_password(msg: types.Message, state: FSMContext):
     wait_msg = await clean_and_send(msg.chat.id, "⏳ Проверяю пароль 2FA...")
     result = await session_manager.submit_password(user_id, password)
     await safe_delete_message(msg.chat.id, wait_msg.message_id)
+    
+    logger.info(f"Результат submit_password: {result}")
     
     if result.get('success'):
         data = await state.get_data()

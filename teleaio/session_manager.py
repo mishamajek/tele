@@ -93,7 +93,7 @@ class SessionManager:
             # Требуется 2FA пароль
             logger.info(f"Пользователю {user_id} требуется 2FA пароль")
             self.pending_codes[user_id]['step'] = 'password'
-            return {"success": True, "need_password": True, "message": "Требуется пароль 2FA"}
+            return {"success": False, "need_password": True, "message": "Требуется пароль 2FA"}
             
         except PhoneCodeInvalidError:
             return {"success": False, "error": "Неверный код"}
