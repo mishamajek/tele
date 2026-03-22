@@ -147,7 +147,8 @@ class MailingManager:
                             target,
                             message,
                             media_file_id,
-                            media_type
+                            media_type,
+                            self.bot
                         )
                     else:
                         result = await self.session_manager.send_message(
