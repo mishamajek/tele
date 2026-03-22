@@ -6,7 +6,8 @@ def main_kb():
     builder.button(text="[ РАССЫЛКА ]", callback_data="mailing")
     builder.button(text="[ ПРОФИЛЬ ]", callback_data="profile")
     builder.button(text="[ ПОМОЩЬ ]", callback_data="help")
-    builder.adjust(1, 2)
+    builder.button(text="[ 📢 НОВОСТИ ]", callback_data="news_channel")
+    builder.adjust(1, 2, 1)
     return builder.as_markup()
 
 def mailing_kb(has_accounts=False, has_active=False):
