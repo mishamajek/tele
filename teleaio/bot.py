@@ -288,7 +288,7 @@ async def help_cb(cb: types.CallbackQuery):
         f"• Придумайте название для рассылки\n"
         f"• Текст можно форматировать HTML:\n"
         f"  &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;\n"
-        f"• Можно прикрепить фото или GIF\n"
+        f"• Можно прикрепить фото\n"
         f"• Рекомендуемый интервал: 300+ секунд\n"
         f"• Рассылка идет бесконечно до остановки\n"
         f"• Получатели: username или номер\n\n"
@@ -680,7 +680,7 @@ async def new_mailing_text(msg: types.Message, state: FSMContext):
         f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
         f"═══════════════════════════\n\n"
         f"Шаг 3/5\n\n"
-        f"Отправьте <b>фото или GIF</b> (опционально)\n\n"
+        f"Отправьте <b>фото</b> (опционально)\n\n"
         f"Или отправьте /skip, чтобы продолжить без медиа"
     )
     
@@ -722,7 +722,7 @@ async def new_mailing_media(msg: types.Message, state: FSMContext):
         )
         await clean_and_send(msg.chat.id, text, cancel_only_kb())
     else:
-        await clean_and_send(msg.chat.id, "❌ Отправьте фото или GIF")
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото")
 
 @dp.message(NewMailing.media)
 async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
@@ -747,7 +747,7 @@ async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
         )
         await clean_and_send(msg.chat.id, text, cancel_only_kb())
     else:
-        await clean_and_send(msg.chat.id, "❌ Отправьте фото, GIF или /skip")
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото или /skip")
 
 @dp.message(NewMailing.interval)
 async def new_mailing_interval(msg: types.Message, state: FSMContext):
@@ -1231,7 +1231,7 @@ async def admin_broadcast_text(msg: types.Message, state: FSMContext):
         f"<b>РАССЫЛКА ВСЕМ ПОЛЬЗОВАТЕЛЯМ</b>\n"
         f"═══════════════════════════\n\n"
         f"Шаг 2/3\n\n"
-        f"Отправьте <b>фото или GIF</b> (опционально)\n\n"
+        f"Отправьте <b>фото</b> (опционально)\n\n"
         f"Или отправьте /skip"
     )
     await clean_and_send(msg.chat.id, text, cancel_only_kb())
@@ -1299,7 +1299,7 @@ async def admin_broadcast_media_skip(msg: types.Message, state: FSMContext):
         
         await clean_and_send(msg.chat.id, text, kb.as_markup())
     else:
-        await clean_and_send(msg.chat.id, "❌ Отправьте фото, GIF или /skip")
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото или /skip")
 
 @dp.callback_query(F.data == "broadcast_confirm_run")
 async def admin_broadcast_run(cb: types.CallbackQuery, state: FSMContext):
