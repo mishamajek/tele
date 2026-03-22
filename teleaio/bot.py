@@ -847,8 +847,8 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
     )
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="[ ЗАПУСТИТЬ БЕСКОНЕЧНУЮ РАССЫЛКУ ]", callback_data="mailing_confirm_run")
-    kb.button(text="[ ОТМЕНА ]", callback_data="cancel_operation")
+    kb.button(text="✅ ЗАПУСТИТЬ", callback_data="mailing_confirm_run")
+    kb.button(text="❌ ОТМЕНА", callback_data="cancel_operation")
     kb.adjust(1)
     
     await clean_and_send(msg.chat.id, text, kb.as_markup())
@@ -858,6 +858,12 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = cb.from_user.id
     
+    # Проверяем, что есть необходимые данные
+    if not data.get('targets'):
+        await cb.answer("❌ Нет получателей для рассылки", show_alert=True)
+        await state.clear()
+        return
+    
     mailing_id = db.create_mailing(
         user_id, 
         data.get('name', 'Без названия'),
@@ -865,7 +871,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
         data['targets'],
         data.get('media_file_id'),
         data.get('media_type'),
-        data['interval']
+        data.get('interval', 300)
     )
     
     result = await mailing_manager.start_mailing(
@@ -875,7 +881,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
         data['targets'],
         data.get('media_file_id'),
         data.get('media_type'),
-        data['interval']
+        data.get('interval', 300)
     )
     
     if result['success']:
@@ -885,7 +891,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
             f"═══════════════════════════\n\n"
             f"📝 <b>{data.get('name', 'Без названия')}</b>\n"
             f"✅ ID: <b>{mailing_id}</b>\n"
-            f"Интервал: {data['interval']} сек\n"
+            f"Интервал: {data.get('interval', 300)} сек\n"
             f"Получателей: {len(data['targets'])}\n\n"
             f"⚠️ Рассылка идет бесконечно по кругу.\n"
             f"Все сообщения отправляются одновременно!\n"
@@ -896,6 +902,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     
     await state.clear()
     await clean_and_send(cb.message.chat.id, text, back_kb("mailing"), cb.message.message_id)
+    await cb.answer()
 
 @dp.callback_query(F.data.startswith("mailing_info_"))
 async def mailing_info_cb(cb: types.CallbackQuery):
