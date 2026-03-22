@@ -203,38 +203,26 @@ class SessionManager:
             logger.error(f"Критическая ошибка: {e}")
             return {"success": False, "error": str(e)}
     
-    async def send_media(self, session_path, target, caption, file_id, file_type, bot):
-        """Отправляет медиа через сессию, скачивая файл от бота"""
+    async def send_photo(self, session_path, target, caption, file_id, bot):
+        """Отправляет фото через сессию, скачивая файл от бота"""
         try:
             if not os.path.exists(session_path):
                 logger.error(f"Файл сессии не найден: {session_path}")
                 return {"success": False, "error": "Файл сессии не найден"}
             
-            # Определяем расширение файла
-            if file_type == 'gif':
-                ext = 'gif'
-            elif file_type == 'photo':
-                ext = 'jpg'
-            elif file_type == 'document':
-                ext = 'file'
-            else:
-                ext = 'jpg'
-            
-            # Формируем имя файла
+            # Скачиваем файл от бота
             safe_file_id = file_id.replace(':', '_').replace('/', '_')[-30:]
-            download_path = config.DOWNLOADS_DIR / f"temp_{safe_file_id}.{ext}"
+            download_path = config.DOWNLOADS_DIR / f"temp_{safe_file_id}.jpg"
             
             try:
-                # Скачиваем файл через бота
                 file = await bot.get_file(file_id)
                 await bot.download_file(file.file_path, destination=download_path)
-                logger.info(f"Файл скачан: {download_path}")
+                logger.info(f"Фото скачано: {download_path}")
             except Exception as e:
-                logger.error(f"Ошибка скачивания файла: {e}")
-                # Если не удалось скачать, отправляем только текст
+                logger.error(f"Ошибка скачивания фото: {e}")
                 if caption:
                     return await self.send_message(session_path, target, caption)
-                return {"success": False, "error": "Не удалось загрузить медиафайл"}
+                return {"success": False, "error": "Не удалось загрузить фото"}
             
             # Подключаемся через Telethon
             client = TelegramClient(str(session_path), self.api_id, self.api_hash)
@@ -242,7 +230,6 @@ class SessionManager:
             
             if not await client.is_user_authorized():
                 await client.disconnect()
-                # Удаляем временный файл
                 try:
                     os.remove(download_path)
                 except:
@@ -250,7 +237,6 @@ class SessionManager:
                 return {"success": False, "error": "Сессия недействительна"}
             
             try:
-                # Определяем получателя
                 if target.startswith('@'):
                     entity = target
                 elif target.lstrip('-').isdigit():
@@ -270,7 +256,7 @@ class SessionManager:
                         pass
                     return {"success": False, "error": f"Ошибка получения получателя: {str(e)}"}
                 
-                # Отправляем файл
+                # Отправляем фото
                 await client.send_file(entity, str(download_path), caption=caption, parse_mode='html')
                 await client.disconnect()
                 
@@ -295,7 +281,7 @@ class SessionManager:
                     os.remove(download_path)
                 except:
                     pass
-                logger.error(f"Ошибка отправки медиа: {e}")
+                logger.error(f"Ошибка отправки фото: {e}")
                 return {"success": False, "error": str(e)}
                 
         except Exception as e:

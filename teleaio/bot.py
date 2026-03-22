@@ -288,9 +288,9 @@ async def help_cb(cb: types.CallbackQuery):
         f"• Придумайте название для рассылки\n"
         f"• Текст можно форматировать HTML:\n"
         f"  &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;\n"
-        f"• Можно прикрепить фото или GIF\n"
+        f"• Можно прикрепить фото\n"
         f"• Рекомендуемый интервал: 300+ секунд\n"
-        f"• Рассылка идет бесконечно до остановки\n"
+        f"• Рассылка идет бесконечно по кругу\n"
         f"• Получатели: username или номер\n\n"
         f"<b>⚙️ Управление:</b>\n"
         f"• Мои рассылки - просмотр, остановка, изменение интервала и названия\n"
@@ -304,7 +304,6 @@ async def news_channel_cb(cb: types.CallbackQuery):
     """Кнопка перехода на новостной канал"""
     await cb.answer("📢 Открываю новостной канал...")
     
-    # Создаем клавиатуру с кнопкой-ссылкой
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 ПЕРЕЙТИ В КАНАЛ", url="https://t.me/Teleaionews")],
         [InlineKeyboardButton(text="◀️ НАЗАД", callback_data="back_to_main")]
@@ -706,13 +705,13 @@ async def new_mailing_text(msg: types.Message, state: FSMContext):
         f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
         f"═══════════════════════════\n\n"
         f"Шаг 3/5\n\n"
-        f"Отправьте <b>фото или GIF</b> (опционально)\n\n"
-        f"Или отправьте /skip, чтобы продолжить без медиа"
+        f"Отправьте <b>фото</b> (опционально)\n\n"
+        f"Или отправьте /skip, чтобы продолжить без фото"
     )
     
     await clean_and_send(msg.chat.id, text, cancel_only_kb())
 
-@dp.message(NewMailing.media, F.photo | F.animation | F.document)
+@dp.message(NewMailing.media, F.photo | F.document)
 async def new_mailing_media(msg: types.Message, state: FSMContext):
     media_file_id = None
     media_type = None
@@ -720,12 +719,9 @@ async def new_mailing_media(msg: types.Message, state: FSMContext):
     if msg.photo:
         media_file_id = msg.photo[-1].file_id
         media_type = 'photo'
-    elif msg.animation:
-        media_file_id = msg.animation.file_id
-        media_type = 'gif'
-    elif msg.document and msg.document.mime_type in ['image/gif', 'image/jpeg', 'image/png']:
+    elif msg.document and msg.document.mime_type in ['image/jpeg', 'image/png', 'image/jpg']:
         media_file_id = msg.document.file_id
-        media_type = 'document'
+        media_type = 'photo'
     
     if media_file_id:
         await state.update_data(media_file_id=media_file_id, media_type=media_type)
@@ -739,7 +735,7 @@ async def new_mailing_media(msg: types.Message, state: FSMContext):
             f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
             f"═══════════════════════════\n\n"
             f"Шаг 4/5\n\n"
-            f"Введите <b>интервал между сообщениями</b> в секундах.\n\n"
+            f"Введите <b>интервал между циклами рассылки</b> в секундах.\n\n"
             f"⚠️ <b>ВАЖНО:</b> Рекомендуемый интервал - от 300 секунд (5 минут)\n"
             f"для избежания блокировки аккаунта!\n\n"
             f"Минимальный интервал: 30 секунд\n"
@@ -748,7 +744,7 @@ async def new_mailing_media(msg: types.Message, state: FSMContext):
         )
         await clean_and_send(msg.chat.id, text, cancel_only_kb())
     else:
-        await clean_and_send(msg.chat.id, "❌ Отправьте фото или GIF")
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото (JPEG/PNG)")
 
 @dp.message(NewMailing.media)
 async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
@@ -764,7 +760,7 @@ async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
             f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
             f"═══════════════════════════\n\n"
             f"Шаг 4/5\n\n"
-            f"Введите <b>интервал между сообщениями</b> в секундах.\n\n"
+            f"Введите <b>интервал между циклами рассылки</b> в секундах.\n\n"
             f"⚠️ <b>ВАЖНО:</b> Рекомендуемый интервал - от 300 секунд (5 минут)\n"
             f"для избежания блокировки аккаунта!\n\n"
             f"Минимальный интервал: 30 секунд\n"
@@ -773,7 +769,7 @@ async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
         )
         await clean_and_send(msg.chat.id, text, cancel_only_kb())
     else:
-        await clean_and_send(msg.chat.id, "❌ Отправьте фото, GIF или /skip")
+        await clean_and_send(msg.chat.id, "❌ Отправьте фото или /skip")
 
 @dp.message(NewMailing.interval)
 async def new_mailing_interval(msg: types.Message, state: FSMContext):
@@ -823,7 +819,7 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     name = data.get('name', 'Без названия')
     text_preview = data.get('text', '')[:100] + "..." if data.get('text') and len(data['text']) > 100 else data.get('text', '—')
-    media_info = "📷 С фото" if data.get('media_type') in ['photo', 'document'] else "🎞 С GIF" if data.get('media_type') == 'gif' else "📝 Без медиа"
+    media_info = "📷 С фото" if data.get('media_type') == 'photo' else "📝 Без фото"
     
     text = (
         f"═══════════════════════════\n"
@@ -835,6 +831,7 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
         f"<b>Интервал:</b> {data['interval']} сек\n"
         f"<b>Получателей:</b> {len(targets)}\n\n"
         f"⚠️ Рассылка будет идти <b>бесконечно</b> по кругу.\n"
+        f"Все сообщения отправляются <b>одновременно</b> всем получателям.\n"
         f"Для остановки используйте кнопку в 'Мои рассылки'\n\n"
         f"Запустить рассылку?"
     )
@@ -881,6 +878,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
             f"Интервал: {data['interval']} сек\n"
             f"Получателей: {len(data['targets'])}\n\n"
             f"⚠️ Рассылка идет бесконечно по кругу.\n"
+            f"Все сообщения отправляются одновременно!\n"
             f"Для остановки используйте кнопку в 'Мои рассылки'"
         )
     else:
@@ -907,7 +905,7 @@ async def mailing_info_cb(cb: types.CallbackQuery):
     is_active = mailing_manager.is_mailing_active(mailing_id)
     
     name = mailing.get('name', 'Без названия')
-    media_type = "📷 Фото" if mailing.get('media_type') == 'photo' else "🎞 GIF" if mailing.get('media_type') == 'gif' else "📝 Текст"
+    media_type = "📷 Фото" if mailing.get('media_type') == 'photo' else "📝 Текст"
     
     text = (
         f"═══════════════════════════\n"
