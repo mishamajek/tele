@@ -37,6 +37,7 @@ class AddAccount(StatesGroup):
     password = State()
 
 class NewMailing(StatesGroup):
+    name = State()
     text = State()
     media = State()
     interval = State()
@@ -46,13 +47,11 @@ class NewMailing(StatesGroup):
 class EditInterval(StatesGroup):
     waiting_for_interval = State()
 
+class EditMailingName(StatesGroup):
+    waiting_for_name = State()
+
 class EditPrice(StatesGroup):
     waiting_for_price = State()
-
-class AdminAddAccount(StatesGroup):
-    phone = State()
-    price = State()
-    file = State()
 
 class AdminBroadcast(StatesGroup):
     text = State()
@@ -112,7 +111,8 @@ async def show_mailing_menu(user_id, chat_id, msg_id=None):
     )
     
     if active_mailing:
-        text += f"\n🟢 <b>Активна рассылка #{active_mailing['id']}</b>\n"
+        name = active_mailing.get('name', 'Без названия')
+        text += f"\n🟢 <b>Активна рассылка: {name}</b>\n"
         text += f"Интервал: {active_mailing.get('interval', 300)} сек\n"
         text += f"Отправлено: {active_mailing.get('messages_sent', 0)}\n"
     
@@ -145,16 +145,7 @@ async def show_my_accounts(user_id, chat_id, msg_id=None):
     else:
         text += "Нет добавленных аккаунтов"
     
-    builder = InlineKeyboardBuilder()
-    for acc in accounts:
-        builder.button(text=f"[ {acc['phone']} ]", callback_data=f"account_info_{acc['id']}")
-    builder.button(text="[ + ДОБАВИТЬ АККАУНТ ]", callback_data="add_account")
-    if accounts:
-        builder.button(text="[ 🚪 ВЫЙТИ ИЗ ВСЕХ ]", callback_data="logout_all_accounts")
-    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_mailing")
-    builder.adjust(1)
-    
-    await clean_and_send(chat_id, text, builder.as_markup(), msg_id)
+    await clean_and_send(chat_id, text, my_accounts_kb(accounts), msg_id)
 
 async def show_profile(user_id, chat_id, msg_id=None):
     user = db.get_user(user_id)
@@ -211,7 +202,8 @@ async def show_my_mailings(user_id, chat_id, msg_id=None):
     if mailings:
         for m in mailings[:10]:
             status_emoji = "✅" if m['status'] == 'completed' else "🟢" if m['status'] == 'running' else "⏸️"
-            text += f"{status_emoji} <b>ID: {m['id']}</b>\n"
+            name = m.get('name', 'Без названия')
+            text += f"{status_emoji} <b>{name}</b> (ID: {m['id']})\n"
             text += f"   Статус: {m['status']}\n"
             text += f"   Интервал: {m.get('interval', 300)} сек\n"
             text += f"   Отправлено: {m['messages_sent']}\n\n"
@@ -293,6 +285,7 @@ async def help_cb(cb: types.CallbackQuery):
         f"3. Введите номер и код\n"
         f"4. Если есть 2FA, введите пароль\n\n"
         f"<b>📨 Рассылка:</b>\n"
+        f"• Придумайте название для рассылки\n"
         f"• Текст можно форматировать HTML:\n"
         f"  &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;\n"
         f"• Можно прикрепить фото или GIF\n"
@@ -300,8 +293,7 @@ async def help_cb(cb: types.CallbackQuery):
         f"• Рассылка идет бесконечно до остановки\n"
         f"• Получатели: username или номер\n\n"
         f"<b>⚙️ Управление:</b>\n"
-        f"• Мои рассылки - просмотр, остановка, изменение интервала\n"
-        f"• Аккаунты - покупка готовых\n"
+        f"• Мои рассылки - просмотр, остановка, изменение интервала и названия\n"
         f"• Профиль - подписка и история"
     )
     await cb.answer()
@@ -418,80 +410,7 @@ async def payment_success_handler(msg: types.Message):
             f"Подписка активна 7 дней\n\n"
             f"Теперь вам доступна массовая рассылка"
         )
-        
-    elif payload.startswith("account_"):
-        parts = payload.split("_")
-        account_id = int(parts[1])
-        user_id = int(parts[2])
-        
-        account = db.get_sell_account(account_id)
-        if account and not account['is_sold']:
-            db.buy_sell_account(account_id, user_id)
-            db.add_purchase(user_id, 'account', amount, account_id)
-            
-            if account['file_id']:
-                await bot.send_document(
-                    msg.chat.id,
-                    account['file_id'],
-                    caption=f"✅ Ваш аккаунт: {account['phone']}\nФайл сессии прилагается"
-                )
-            
-            text = (
-                f"═══════════════════════════\n"
-                f"<b>АККАУНТ ПРИОБРЕТЕН</b>\n"
-                f"═══════════════════════════\n\n"
-                f"✅ Аккаунт {account['phone']} ваш!\n"
-                f"Файл сессии отправлен выше"
-            )
-        else:
-            text = "❌ Аккаунт уже продан"
-    
-    await clean_and_send(msg.chat.id, text, main_kb())
-
-@dp.callback_query(F.data == "accounts")
-async def accounts_cb(cb: types.CallbackQuery):
-    accounts = db.get_available_sell_accounts()
-    text = (
-        f"═══════════════════════════\n"
-        f"<b>ДОСТУПНЫЕ АККАУНТЫ</b>\n"
-        f"═══════════════════════════\n\n"
-        f"Всего: {len(accounts)}\n\n"
-        f"Цена: {db.get_setting('account_price') or 50}⭐ за аккаунт\n\n"
-        f"После покупки вы получите файл сессии"
-    )
-    await clean_and_send(cb.message.chat.id, text, accounts_kb(accounts, 0), cb.message.message_id)
-
-@dp.callback_query(F.data.startswith("accounts_page_"))
-async def accounts_page_cb(cb: types.CallbackQuery):
-    page = int(cb.data.replace("accounts_page_", ""))
-    accounts = db.get_available_sell_accounts()
-    await clean_and_send(cb.message.chat.id, f"Страница {page+1}", accounts_kb(accounts, page), cb.message.message_id)
-
-@dp.callback_query(F.data.startswith("buy_account_"))
-async def pay_account_cb(cb: types.CallbackQuery):
-    account_id = int(cb.data.replace("buy_account_", ""))
-    account = db.get_sell_account(account_id)
-    
-    if not account or account['is_sold']:
-        await cb.answer("❌ Аккаунт уже продан", show_alert=True)
-        return
-    
-    price = db.get_setting('account_price') or config.DEFAULT_ACCOUNT_PRICE
-    
-    await bot.send_invoice(
-        chat_id=cb.message.chat.id,
-        title="Аккаунт Telegram",
-        description=f"Номер: {account['phone']}",
-        payload=f"account_{account_id}_{cb.from_user.id}",
-        provider_token="",
-        currency="XTR",
-        prices=[types.LabeledPrice(label="Аккаунт", amount=int(price))],
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text=f"💫 Оплатить {price} ⭐", pay=True)],
-            [types.InlineKeyboardButton(text="[ ОТМЕНА ]", callback_data="accounts")]
-        ])
-    )
-    await safe_delete_message(cb.message.chat.id, cb.message.message_id)
+        await clean_and_send(msg.chat.id, text, main_kb())
 
 @dp.callback_query(F.data == "add_account")
 async def add_account_start(cb: types.CallbackQuery, state: FSMContext):
@@ -615,27 +534,7 @@ async def account_info_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Аккаунт не найден", show_alert=True)
         return
     
-    text = (
-        f"═══════════════════════════\n"
-        f"<b>АККАУНТ {account['phone']}</b>\n"
-        f"═══════════════════════════\n\n"
-        f"📱 Номер: <code>{account['phone']}</code>\n"
-        f"📅 Добавлен: {account['added_date'][:16]}\n"
-        f"📊 Всего отправлено: {account['total_messages_sent']}\n"
-        f"📈 Отправлено сегодня: {account['messages_sent_today']}\n"
-        f"⏱ Последнее использование: {account['last_used'] or '—'}\n"
-        f"✅ Статус: {'Активен' if account['is_active'] else 'Неактивен'}\n"
-    )
-    
-    builder = InlineKeyboardBuilder()
-    if account['is_active']:
-        builder.button(text="[ 🚪 ВЫЙТИ ]", callback_data=f"logout_account_{account_id}")
-    builder.button(text="[ ❌ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
-    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_accounts")
-    builder.adjust(1)
-    
-    await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, builder.as_markup(), cb.message.message_id)
+    await clean_and_send(cb.message.chat.id, f"Информация об аккаунте {account['phone']}", account_info_kb(account_id), cb.message.message_id)
 
 @dp.callback_query(F.data.startswith("logout_account_"))
 async def logout_account_cb(cb: types.CallbackQuery):
@@ -652,36 +551,7 @@ async def logout_account_cb(cb: types.CallbackQuery):
         return
     
     db.deactivate_account(account_id)
-    
     await cb.answer(f"✅ Выход выполнен")
-    await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
-
-@dp.callback_query(F.data == "logout_all_accounts")
-async def logout_all_accounts_cb(cb: types.CallbackQuery):
-    user_id = cb.from_user.id
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ ✅ ПОДТВЕРДИТЬ ]", callback_data="confirm_logout_all")
-    builder.button(text="[ ❌ ОТМЕНА ]", callback_data="back_to_my_accounts")
-    builder.adjust(1)
-    
-    text = (
-        f"═══════════════════════════\n"
-        f"<b>ПОДТВЕРЖДЕНИЕ</b>\n"
-        f"═══════════════════════════\n\n"
-        f"Вы уверены, что хотите выйти из ВСЕХ аккаунтов?"
-    )
-    
-    await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, builder.as_markup(), cb.message.message_id)
-
-@dp.callback_query(F.data == "confirm_logout_all")
-async def confirm_logout_all_cb(cb: types.CallbackQuery):
-    user_id = cb.from_user.id
-    
-    db.deactivate_all_accounts(user_id)
-    
-    await cb.answer("✅ Выход выполнен из всех аккаунтов")
     await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
 
 @dp.callback_query(F.data.startswith("delete_account_"))
@@ -704,7 +574,6 @@ async def delete_account_cb(cb: types.CallbackQuery):
         pass
     
     db.delete_user_account(account_id, cb.from_user.id)
-    
     await cb.answer("✅ Аккаунт удален")
     await show_my_accounts(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
 
@@ -717,13 +586,40 @@ async def new_mailing_start(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer("❌ Сначала добавьте аккаунт", show_alert=True)
         return
     
-    await state.set_state(NewMailing.text)
+    await state.set_state(NewMailing.name)
     
     text = (
         f"═══════════════════════════\n"
         f"<b>НОВАЯ РАССЫЛКА</b>\n"
         f"═══════════════════════════\n\n"
-        f"Шаг 1/4\n\n"
+        f"Шаг 1/5\n\n"
+        f"Придумайте <b>название</b> для рассылки.\n"
+        f"Это поможет вам легко её найти в списке.\n\n"
+        f"Например: 'Новости', 'Акции', 'Важное'\n\n"
+        f"Отправьте название:"
+    )
+    
+    await cb.answer()
+    await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
+
+@dp.message(NewMailing.name)
+async def new_mailing_name(msg: types.Message, state: FSMContext):
+    name = msg.text.strip()
+    if len(name) > 50:
+        await clean_and_send(msg.chat.id, "❌ Название не должно превышать 50 символов")
+        return
+    if len(name) < 1:
+        await clean_and_send(msg.chat.id, "❌ Название не может быть пустым")
+        return
+    
+    await state.update_data(name=name)
+    await state.set_state(NewMailing.text)
+    
+    text = (
+        f"═══════════════════════════\n"
+        f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
+        f"═══════════════════════════\n\n"
+        f"Шаг 2/5\n\n"
         f"Отправьте <b>текст</b> для рассылки.\n\n"
         f"<b>Форматирование HTML:</b>\n"
         f"• &lt;b&gt;жирный&lt;/b&gt;\n"
@@ -733,8 +629,7 @@ async def new_mailing_start(cb: types.CallbackQuery, state: FSMContext):
         f"Или отправьте /skip, чтобы пропустить текст"
     )
     
-    await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
+    await clean_and_send(msg.chat.id, text, cancel_only_kb())
 
 @dp.message(NewMailing.text)
 async def new_mailing_text(msg: types.Message, state: FSMContext):
@@ -745,11 +640,14 @@ async def new_mailing_text(msg: types.Message, state: FSMContext):
     
     await state.set_state(NewMailing.media)
     
+    data = await state.get_data()
+    name = data.get('name', 'Без названия')
+    
     text = (
         f"═══════════════════════════\n"
-        f"<b>НОВАЯ РАССЫЛКА</b>\n"
+        f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
         f"═══════════════════════════\n\n"
-        f"Шаг 2/4\n\n"
+        f"Шаг 3/5\n\n"
         f"Отправьте <b>фото или GIF</b> (опционально)\n\n"
         f"Или отправьте /skip, чтобы продолжить без медиа"
     )
@@ -775,11 +673,14 @@ async def new_mailing_media(msg: types.Message, state: FSMContext):
         await state.update_data(media_file_id=media_file_id, media_type=media_type)
         await state.set_state(NewMailing.interval)
         
+        data = await state.get_data()
+        name = data.get('name', 'Без названия')
+        
         text = (
             f"═══════════════════════════\n"
-            f"<b>НОВАЯ РАССЫЛКА</b>\n"
+            f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
             f"═══════════════════════════\n\n"
-            f"Шаг 3/4\n\n"
+            f"Шаг 4/5\n\n"
             f"Введите <b>интервал между сообщениями</b> в секундах.\n\n"
             f"⚠️ <b>ВАЖНО:</b> Рекомендуемый интервал - от 300 секунд (5 минут)\n"
             f"для избежания блокировки аккаунта!\n\n"
@@ -797,11 +698,14 @@ async def new_mailing_media_skip(msg: types.Message, state: FSMContext):
         await state.update_data(media_file_id=None, media_type=None)
         await state.set_state(NewMailing.interval)
         
+        data = await state.get_data()
+        name = data.get('name', 'Без названия')
+        
         text = (
             f"═══════════════════════════\n"
-            f"<b>НОВАЯ РАССЫЛКА</b>\n"
+            f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
             f"═══════════════════════════\n\n"
-            f"Шаг 3/4\n\n"
+            f"Шаг 4/5\n\n"
             f"Введите <b>интервал между сообщениями</b> в секундах.\n\n"
             f"⚠️ <b>ВАЖНО:</b> Рекомендуемый интервал - от 300 секунд (5 минут)\n"
             f"для избежания блокировки аккаунта!\n\n"
@@ -830,11 +734,14 @@ async def new_mailing_interval(msg: types.Message, state: FSMContext):
     await state.update_data(interval=interval)
     await state.set_state(NewMailing.targets)
     
+    data = await state.get_data()
+    name = data.get('name', 'Без названия')
+    
     text = (
         f"═══════════════════════════\n"
-        f"<b>НОВАЯ РАССЫЛКА</b>\n"
+        f"<b>НОВАЯ РАССЫЛКА: {name}</b>\n"
         f"═══════════════════════════\n\n"
-        f"Шаг 4/4\n\n"
+        f"Шаг 5/5\n\n"
         f"Отправьте список <b>получателей</b>.\n"
         f"Каждый получатель с новой строки.\n\n"
         f"<b>Форматы:</b>\n"
@@ -856,6 +763,7 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
     await state.set_state(NewMailing.confirm)
     
     data = await state.get_data()
+    name = data.get('name', 'Без названия')
     text_preview = data.get('text', '')[:100] + "..." if data.get('text') and len(data['text']) > 100 else data.get('text', '—')
     media_info = "📷 С фото" if data.get('media_type') in ['photo', 'document'] else "🎞 С GIF" if data.get('media_type') == 'gif' else "📝 Без медиа"
     
@@ -863,6 +771,7 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
         f"═══════════════════════════\n"
         f"<b>ПОДТВЕРЖДЕНИЕ</b>\n"
         f"═══════════════════════════\n\n"
+        f"<b>Название:</b> {name}\n"
         f"<b>Текст:</b>\n{text_preview}\n\n"
         f"<b>Медиа:</b> {media_info}\n"
         f"<b>Интервал:</b> {data['interval']} сек\n"
@@ -886,6 +795,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
     
     mailing_id = db.create_mailing(
         user_id, 
+        data.get('name', 'Без названия'),
         data.get('text'), 
         data['targets'],
         data.get('media_file_id'),
@@ -908,6 +818,7 @@ async def mailing_run(cb: types.CallbackQuery, state: FSMContext):
             f"═══════════════════════════\n"
             f"<b>РАССЫЛКА ЗАПУЩЕНА</b>\n"
             f"═══════════════════════════\n\n"
+            f"📝 <b>{data.get('name', 'Без названия')}</b>\n"
             f"✅ ID: <b>{mailing_id}</b>\n"
             f"Интервал: {data['interval']} сек\n"
             f"Получателей: {len(data['targets'])}\n\n"
@@ -937,11 +848,13 @@ async def mailing_info_cb(cb: types.CallbackQuery):
     stats = db.get_queue_stats(mailing_id)
     is_active = mailing_manager.is_mailing_active(mailing_id)
     
+    name = mailing.get('name', 'Без названия')
     media_type = "📷 Фото" if mailing.get('media_type') == 'photo' else "🎞 GIF" if mailing.get('media_type') == 'gif' else "📝 Текст"
     
     text = (
         f"═══════════════════════════\n"
-        f"<b>РАССЫЛКА #{mailing_id}</b>\n"
+        f"<b>РАССЫЛКА: {name}</b>\n"
+        f"<b>ID: {mailing_id}</b>\n"
         f"═══════════════════════════\n\n"
         f"Статус: <b>{'🟢 АКТИВНА' if is_active else '⏸ ОСТАНОВЛЕНА'}</b>\n"
         f"Тип: {media_type}\n"
@@ -974,6 +887,92 @@ async def mailing_stop_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Не удалось остановить", show_alert=True)
     
     await show_my_mailings(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
+
+@dp.callback_query(F.data.startswith("mailing_resume_"))
+async def mailing_resume_cb(cb: types.CallbackQuery):
+    try:
+        mailing_id = int(cb.data.replace("mailing_resume_", ""))
+    except ValueError:
+        await cb.answer("❌ Неверный формат")
+        return
+    
+    mailing = db.get_mailing(mailing_id)
+    if not mailing or mailing['user_id'] != cb.from_user.id:
+        await cb.answer("❌ Рассылка не найдена")
+        return
+    
+    if not db.has_active_subscription(cb.from_user.id):
+        await cb.answer("❌ Нужна подписка", show_alert=True)
+        return
+    
+    pending = db.get_pending_messages(mailing_id, 1)
+    if not pending:
+        await cb.answer("❌ Нет сообщений для отправки. Создайте новую рассылку.", show_alert=True)
+        return
+    
+    result = await mailing_manager.resume_mailing(mailing_id)
+    
+    if result['success']:
+        await cb.answer("✅ Рассылка возобновлена")
+    else:
+        await cb.answer(f"❌ {result.get('error', 'Не удалось возобновить')}", show_alert=True)
+    
+    await show_my_mailings(cb.from_user.id, cb.message.chat.id, cb.message.message_id)
+
+@dp.callback_query(F.data.startswith("mailing_rename_"))
+async def mailing_rename_cb(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        mailing_id = int(cb.data.replace("mailing_rename_", ""))
+    except ValueError:
+        await cb.answer("❌ Неверный формат")
+        return
+    
+    mailing = db.get_mailing(mailing_id)
+    if not mailing or mailing['user_id'] != cb.from_user.id:
+        await cb.answer("❌ Рассылка не найдена", show_alert=True)
+        return
+    
+    await state.set_state(EditMailingName.waiting_for_name)
+    await state.update_data(mailing_id=mailing_id)
+    
+    current_name = mailing.get('name', 'Без названия')
+    
+    text = (
+        f"═══════════════════════════\n"
+        f"<b>ИЗМЕНЕНИЕ НАЗВАНИЯ</b>\n"
+        f"═══════════════════════════\n\n"
+        f"Текущее название: <b>{current_name}</b>\n\n"
+        f"Введите новое название для рассылки #{mailing_id}:\n\n"
+        f"Максимум 50 символов"
+    )
+    
+    await cb.answer()
+    await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
+
+@dp.message(EditMailingName.waiting_for_name)
+async def edit_mailing_name_handler(msg: types.Message, state: FSMContext):
+    name = msg.text.strip()
+    
+    if len(name) > 50:
+        await clean_and_send(msg.chat.id, "❌ Название не должно превышать 50 символов")
+        return
+    
+    if len(name) < 1:
+        await clean_and_send(msg.chat.id, "❌ Название не может быть пустым")
+        return
+    
+    data = await state.get_data()
+    mailing_id = data.get('mailing_id')
+    
+    db.update_mailing_name(mailing_id, name)
+    
+    if mailing_id in mailing_manager.active_mailings:
+        mailing_manager.active_mailings[mailing_id]['name'] = name
+    elif mailing_id in mailing_manager.paused_mailings:
+        mailing_manager.paused_mailings[mailing_id]['name'] = name
+    
+    await state.clear()
+    await clean_and_send(msg.chat.id, f"✅ Название рассылки #{mailing_id} изменено на <b>{name}</b>", back_kb("my_mailings"))
 
 @dp.callback_query(F.data.startswith("mailing_interval_"))
 async def mailing_interval_cb(cb: types.CallbackQuery, state: FSMContext):
@@ -1076,14 +1075,11 @@ async def admin_stats_cb(cb: types.CallbackQuery):
         f"👥 Пользователей: {stats['users']}\n"
         f"✅ Активных подписок: {stats['active_subs']}\n"
         f"📦 Аккаунтов юзеров: {stats['user_accounts']}\n"
-        f"💰 Аккаунтов на продажу: {stats['sell_accounts_total']}\n"
-        f"💸 Продано аккаунтов: {stats['sell_accounts_sold']}\n"
         f"📨 Рассылок: {stats['mailings']}\n"
         f"✉️ Отправлено сообщений: {stats['messages_sent']}\n"
         f"⭐ Заработано звезд: {stats['purchases_total']}\n\n"
         f"<b>⚙️ Настройки:</b>\n"
         f"Подписка: {settings.get('subscription_price', '—')}⭐\n"
-        f"Аккаунт: {settings.get('account_price', '—')}⭐\n"
         f"Пробный: {settings.get('trial_hours', '—')}ч\n"
         f"Лимит в день: {settings.get('max_messages_per_day', '—')}\n"
         f"Задержка: {settings.get('message_delay', '—')}с"
@@ -1106,7 +1102,6 @@ async def admin_prices_cb(cb: types.CallbackQuery):
         f"═══════════════════════════\n\n"
         f"Текущие настройки:\n"
         f"Подписка: {settings.get('subscription_price', '—')}⭐\n"
-        f"Аккаунт: {settings.get('account_price', '—')}⭐\n"
         f"Пробный: {settings.get('trial_hours', '—')}ч\n"
         f"Лимит в день: {settings.get('max_messages_per_day', '—')}\n"
         f"Задержка: {settings.get('message_delay', '—')}с\n\n"
@@ -1121,14 +1116,6 @@ async def admin_edit_sub_price_cb(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditPrice.waiting_for_price)
     await state.update_data(price_key='subscription_price', price_name='подписки')
     text = "💰 Введите новую цену подписки (в звездах):"
-    await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
-
-@dp.callback_query(F.data == "admin_edit_acc_price")
-async def admin_edit_acc_price_cb(cb: types.CallbackQuery, state: FSMContext):
-    await state.set_state(EditPrice.waiting_for_price)
-    await state.update_data(price_key='account_price', price_name='аккаунта')
-    text = "💰 Введите новую цену аккаунта (в звездах):"
     await cb.answer()
     await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
 
@@ -1187,90 +1174,6 @@ async def edit_price_handler(msg: types.Message, state: FSMContext):
     
     text = f"✅ {name} обновлена на {value}"
     await clean_and_send(msg.chat.id, text, back_kb("admin"))
-
-@dp.callback_query(F.data == "admin_add_account")
-async def admin_add_account_start(cb: types.CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
-    
-    await state.set_state(AdminAddAccount.phone)
-    
-    text = (
-        f"═══════════════════════════\n"
-        f"<b>ДОБАВЛЕНИЕ АККАУНТА</b>\n"
-        f"═══════════════════════════\n\n"
-        f"Шаг 1/3\n\n"
-        f"Отправьте номер телефона в формате:\n"
-        f"<code>+71234567890</code>"
-    )
-    
-    await cb.answer()
-    await clean_and_send(cb.message.chat.id, text, cancel_only_kb(), cb.message.message_id)
-
-@dp.message(AdminAddAccount.phone)
-async def admin_add_account_phone(msg: types.Message, state: FSMContext):
-    phone = msg.text.strip()
-    if not phone.startswith('+'):
-        phone = '+' + phone
-    
-    await state.update_data(phone=phone)
-    await state.set_state(AdminAddAccount.price)
-    
-    text = "💰 Введите цену аккаунта (в звездах):"
-    await clean_and_send(msg.chat.id, text, cancel_only_kb())
-
-@dp.message(AdminAddAccount.price)
-async def admin_add_account_price(msg: types.Message, state: FSMContext):
-    try:
-        price = int(msg.text)
-        if price < 0:
-            raise ValueError
-    except:
-        await clean_and_send(msg.chat.id, "❌ Введите положительное число")
-        return
-    
-    await state.update_data(price=price)
-    await state.set_state(AdminAddAccount.file)
-    
-    text = "📁 Отправьте файл сессии (.session):"
-    await clean_and_send(msg.chat.id, text, cancel_only_kb())
-
-@dp.message(AdminAddAccount.file, F.document)
-async def admin_add_account_file(msg: types.Message, state: FSMContext):
-    doc = msg.document
-    data = await state.get_data()
-    phone = data.get('phone')
-    price = data.get('price')
-    
-    if not doc.file_name.endswith('.session'):
-        await clean_and_send(msg.chat.id, "❌ Файл должен иметь расширение .session")
-        return
-    
-    file_path = config.SESSIONS_DIR / doc.file_name
-    await bot.download(doc, destination=file_path)
-    
-    account_id = db.add_sell_account(phone, doc.file_name, doc.file_id, price, str(file_path))
-    
-    if account_id:
-        text = (
-            f"═══════════════════════════\n"
-            f"<b>АККАУНТ ДОБАВЛЕН</b>\n"
-            f"═══════════════════════════\n\n"
-            f"✅ Номер: <code>{phone}</code>\n"
-            f"✅ Цена: {price}⭐\n"
-            f"✅ Файл: {doc.file_name}\n"
-            f"✅ ID: {account_id}"
-        )
-    else:
-        text = "❌ Ошибка: такой номер уже есть в базе"
-    
-    await state.clear()
-    await clean_and_send(msg.chat.id, text, back_kb("admin"))
-
-@dp.message(AdminAddAccount.file)
-async def admin_add_account_file_invalid(msg: types.Message, state: FSMContext):
-    await clean_and_send(msg.chat.id, "❌ Отправьте файл")
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):

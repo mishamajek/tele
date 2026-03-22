@@ -77,26 +77,18 @@ class SessionManager:
         
         try:
             code = code.strip().replace(' ', '').replace('-', '')
-            
-            # Пытаемся войти с кодом
             await client.sign_in(phone, code)
             
-            # Если дошли сюда - успех
             del self.pending_codes[user_id]
             return {"success": True, "message": "Аккаунт успешно добавлен"}
             
         except SessionPasswordNeededError:
-            # Требуется 2FA пароль
-            logger.info(f"Пользователю {user_id} требуется 2FA пароль")
             self.pending_codes[user_id]['step'] = 'password'
-            return {"success": False, "need_password": True, "error": "Требуется пароль 2FA"}
-            
+            return {"success": True, "need_password": True}
         except PhoneCodeInvalidError:
             return {"success": False, "error": "Неверный код"}
-            
         except PhoneCodeExpiredError:
             return {"success": False, "error": "Код истек. Запросите новый код."}
-            
         except Exception as e:
             await client.disconnect()
             del self.pending_codes[user_id]
@@ -128,15 +120,9 @@ class SessionManager:
         client = data['client']
         
         try:
-            # Пытаемся войти с паролем 2FA
             await client.sign_in(password=password)
-            
-            # Успех
             del self.pending_codes[user_id]
             return {"success": True, "message": "Аккаунт успешно добавлен"}
-            
-        except PhoneCodeInvalidError:
-            return {"success": False, "error": "Неверный пароль 2FA"}
         except Exception as e:
             await client.disconnect()
             del self.pending_codes[user_id]
@@ -155,7 +141,7 @@ class SessionManager:
             if not await client.is_user_authorized():
                 await client.disconnect()
                 logger.error(f"Сессия не авторизована: {session_path}")
-                return {"success": False, "error": "Сессия недействительна. Удалите аккаунт и добавьте заново."}
+                return {"success": False, "error": "Сессия недействительна. Переавторизуйтесь."}
             
             try:
                 if target.startswith('@'):
