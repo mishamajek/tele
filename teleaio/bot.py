@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import os
+import re
 from pathlib import Path
 from datetime import datetime
 import json
@@ -58,14 +59,45 @@ class AdminBroadcast(StatesGroup):
     media = State()
     confirm = State()
 
+def fix_telegram_html(text):
+    """Преобразует HTML для совместимости с Telethon и aiogram"""
+    if not text:
+        return text
+    
+    # Заменяем blockquote на обычную цитату
+    text = text.replace('<blockquote>', '> ')
+    text = text.replace('</blockquote>', '')
+    
+    # Удаляем пустые теги
+    text = re.sub(r'<(\w+)>\s*</\1>', '', text)
+    
+    return text
+
 async def clean_and_send(chat_id, text, kb=None, msg_to_delete=None, parse_mode=ParseMode.HTML):
     if msg_to_delete:
         try:
             await bot.delete_message(chat_id, msg_to_delete)
         except:
             pass
-    msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode=parse_mode)
-    return msg
+    
+    # Очищаем текст от проблемных тегов для предпросмотра
+    if text:
+        text = fix_telegram_html(text)
+    
+    try:
+        msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode=parse_mode)
+        return msg
+    except Exception as e:
+        # Если ошибка с HTML, отправляем без форматирования
+        logger.error(f"Ошибка отправки с HTML: {e}")
+        try:
+            # Удаляем все HTML-теги
+            clean_text = re.sub(r'<[^>]+>', '', text)
+            msg = await bot.send_message(chat_id, clean_text, reply_markup=kb)
+            return msg
+        except Exception as e2:
+            logger.error(f"Ошибка отправки без HTML: {e2}")
+            return None
 
 async def safe_delete_message(chat_id, message_id):
     try:
@@ -828,7 +860,12 @@ async def new_mailing_targets(msg: types.Message, state: FSMContext):
     
     data = await state.get_data()
     name = data.get('name', 'Без названия')
-    text_preview = data.get('text', '')[:100] + "..." if data.get('text') and len(data['text']) > 100 else data.get('text', '—')
+    
+    # Очищаем текст от проблемных тегов для предпросмотра
+    text_preview_raw = data.get('text', '—')
+    text_preview_raw = fix_telegram_html(text_preview_raw)
+    text_preview = text_preview_raw[:100] + "..." if len(text_preview_raw) > 100 else text_preview_raw
+    
     media_info = "📷 С фото" if data.get('media_type') == 'photo' else "📝 Без фото"
     
     text = (
