@@ -1,5 +1,6 @@
 import sqlite3
 import time
+import asyncio
 from contextlib import contextmanager
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
@@ -14,16 +15,20 @@ from config import (
 class Database:
     def __init__(self, db_path='database.db'):
         self.db_path = db_path
+        self._lock = asyncio.Lock()
         self.init_db()
+    
+    async def _execute_with_lock(self, func, *args, **kwargs):
+        """Выполняет синхронную функцию с асинхронной блокировкой"""
+        async with self._lock:
+            return func(*args, **kwargs)
     
     @contextmanager
     def get_conn(self, retry=3, delay=0.1):
-        """Получает соединение с БД с повторными попытками при блокировке"""
         for attempt in range(retry):
             try:
                 conn = sqlite3.connect(self.db_path, timeout=30)
                 conn.row_factory = sqlite3.Row
-                # Включаем WAL режим для лучшей параллельной работы
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 try:
@@ -36,18 +41,15 @@ class Database:
                     time.sleep(delay * (attempt + 1))
                     continue
                 raise
-            except Exception as e:
+            except Exception:
                 raise
     
     def init_db(self):
         with self.get_conn() as conn:
             c = conn.cursor()
-            
-            # Включаем WAL режим
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("PRAGMA synchronous=NORMAL")
             
-            # Пользователи
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE,
@@ -60,7 +62,6 @@ class Database:
                 last_message_date TEXT
             )''')
             
-            # Аккаунты пользователей
             c.execute('''CREATE TABLE IF NOT EXISTS user_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -74,7 +75,6 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Рассылки
             c.execute('''CREATE TABLE IF NOT EXISTS mailings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -93,10 +93,8 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Проверяем и добавляем колонки
             c.execute("PRAGMA table_info(mailings)")
             columns = [col[1] for col in c.fetchall()]
-            
             if 'name' not in columns:
                 c.execute('ALTER TABLE mailings ADD COLUMN name TEXT DEFAULT "Без названия"')
             if 'media_file_id' not in columns:
@@ -108,7 +106,6 @@ class Database:
             if 'interval' not in columns:
                 c.execute('ALTER TABLE mailings ADD COLUMN interval INTEGER DEFAULT 300')
             
-            # Покупки (только подписки)
             c.execute('''CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -118,13 +115,11 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
             
-            # Настройки
             c.execute('''CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )''')
             
-            # Очередь сообщений
             c.execute('''CREATE TABLE IF NOT EXISTS message_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mailing_id INTEGER NOT NULL,
@@ -137,27 +132,23 @@ class Database:
                 FOREIGN KEY (account_id) REFERENCES user_accounts(id)
             )''')
             
-            # Создаем индексы для ускорения
             c.execute('CREATE INDEX IF NOT EXISTS idx_message_queue_status ON message_queue(status)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_message_queue_mailing_id ON message_queue(mailing_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_user_id ON mailings(user_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_status ON mailings(status)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_user_id ON user_accounts(user_id)')
-            c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_is_active ON user_accounts(is_active)')
             
-            # Настройки по умолчанию
             default_settings = [
                 ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
                 ('trial_hours', str(DEFAULT_TRIAL_HOURS)),
                 ('max_messages_per_day', str(MAX_MESSAGES_PER_DAY)),
                 ('message_delay', str(MESSAGE_DELAY))
             ]
-            
             for key, value in default_settings:
                 c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (key, value))
-            
             conn.commit()
     
+    # ==================== ПОЛЬЗОВАТЕЛИ ====================
     def get_user(self, telegram_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -187,10 +178,11 @@ class Database:
     def reset_daily_messages(self):
         with self.get_conn() as conn:
             c = conn.cursor()
+            today = datetime.now().strftime('%Y-%m-%d')
             c.execute('''
                 UPDATE users SET daily_messages_sent = 0
                 WHERE last_message_date < ?
-            ''', (datetime.now().strftime('%Y-%m-%d'),))
+            ''', (today,))
             conn.commit()
     
     def reset_accounts_daily_messages(self):
@@ -199,6 +191,7 @@ class Database:
             c.execute('UPDATE user_accounts SET messages_sent_today = 0')
             conn.commit()
     
+    # ==================== ПОДПИСКИ ====================
     def has_active_subscription(self, telegram_id):
         user = self.get_user(telegram_id)
         if not user or not user['subscription_end']:
@@ -211,9 +204,7 @@ class Database:
     
     def get_subscription_end(self, telegram_id):
         user = self.get_user(telegram_id)
-        if not user:
-            return None
-        return user['subscription_end']
+        return user['subscription_end'] if user else None
     
     def activate_subscription(self, telegram_id, days=7):
         with self.get_conn() as conn:
@@ -242,6 +233,7 @@ class Database:
         user = self.get_user(telegram_id)
         return user and not user['trial_used']
     
+    # ==================== АККАУНТЫ ПОЛЬЗОВАТЕЛЕЙ ====================
     def add_user_account(self, user_id, phone, session_path):
         with self.get_conn() as conn:
             try:
@@ -252,8 +244,7 @@ class Database:
                 ''', (user_id, phone, session_path))
                 conn.commit()
                 return c.lastrowid
-            except Exception as e:
-                print(f"Ошибка добавления аккаунта: {e}")
+            except:
                 return None
     
     def get_user_accounts(self, user_id):
@@ -274,7 +265,7 @@ class Database:
             return dict(row) if row else None
     
     def update_account_last_used(self, account_id):
-        """Обновляет статистику аккаунта с повторными попытками"""
+        """Синхронное обновление для внутреннего использования (через асинхронную обёртку)"""
         for attempt in range(3):
             try:
                 with self.get_conn() as conn:
@@ -294,6 +285,12 @@ class Database:
                     continue
                 raise
         return False
+    
+    async def update_account_last_used_async(self, account_id):
+        """Асинхронная обёртка"""
+        def _wrapper():
+            return self.update_account_last_used(account_id)
+        return await self._execute_with_lock(_wrapper)
     
     def deactivate_account(self, account_id):
         with self.get_conn() as conn:
@@ -317,6 +314,7 @@ class Database:
             conn.commit()
             return c.rowcount > 0
     
+    # ==================== РАССЫЛКИ ====================
     def create_mailing(self, user_id, name, message_text, targets, media_file_id=None, media_type=None, interval=300):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -335,7 +333,6 @@ class Database:
             return dict(row) if row else None
     
     def update_mailing_status(self, mailing_id, status, messages_sent=None):
-        """Обновляет статус рассылки с повторными попытками"""
         for attempt in range(3):
             try:
                 with self.get_conn() as conn:
@@ -414,6 +411,7 @@ class Database:
             conn.commit()
             return c.rowcount > 0
     
+    # ==================== ОЧЕРЕДЬ ====================
     def add_to_queue(self, mailing_id, account_id, targets):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -483,6 +481,7 @@ class Database:
             failed = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ? AND status = "failed"', (mailing_id,)).fetchone()[0]
             return {'total': total, 'sent': sent, 'failed': failed}
     
+    # ==================== ПОКУПКИ ====================
     def add_purchase(self, user_id, item_type, amount):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -501,6 +500,7 @@ class Database:
             ''', (user_id,))
             return [dict(row) for row in c.fetchall()]
     
+    # ==================== НАСТРОЙКИ ====================
     def get_setting(self, key):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -521,6 +521,7 @@ class Database:
             c.execute('SELECT * FROM settings')
             return {row['key']: row['value'] for row in c.fetchall()}
     
+    # ==================== СТАТИСТИКА ====================
     def get_stats(self):
         with self.get_conn() as conn:
             c = conn.cursor()
