@@ -16,21 +16,43 @@ class Database:
     def __init__(self, db_path='database.db'):
         self.db_path = db_path
         self._lock = asyncio.Lock()
+        self._write_queue = asyncio.Queue()
+        self._writer_task = asyncio.create_task(self._writer_loop())
         self.init_db()
-    
-    async def _execute_with_lock(self, func, *args, **kwargs):
-        """Выполняет синхронную функцию с асинхронной блокировкой"""
-        async with self._lock:
-            return func(*args, **kwargs)
-    
+
+    async def _writer_loop(self):
+        """Фоновый поток для записи в БД"""
+        while True:
+            try:
+                func, args, kwargs, future = await self._write_queue.get()
+                try:
+                    result = func(*args, **kwargs)
+                    future.set_result(result)
+                except Exception as e:
+                    future.set_exception(e)
+                finally:
+                    self._write_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Ошибка в writer_loop: {e}")
+
+    async def _execute_write(self, func, *args, **kwargs):
+        """Асинхронное выполнение операции записи через очередь"""
+        future = asyncio.get_event_loop().create_future()
+        await self._write_queue.put((func, args, kwargs, future))
+        return await future
+
     @contextmanager
-    def get_conn(self, retry=3, delay=0.1):
+    def get_conn(self, retry=5, delay=0.2):
+        """Получение соединения с повторными попытками"""
         for attempt in range(retry):
             try:
-                conn = sqlite3.connect(self.db_path, timeout=30)
+                conn = sqlite3.connect(self.db_path, timeout=60)
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA cache_size=-20000")  # 20MB кэша
                 try:
                     yield conn
                 finally:
@@ -41,15 +63,17 @@ class Database:
                     time.sleep(delay * (attempt + 1))
                     continue
                 raise
-            except Exception:
+            except Exception as e:
                 raise
-    
+
     def init_db(self):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("PRAGMA synchronous=NORMAL")
-            
+            c.execute("PRAGMA cache_size=-20000")
+
+            # Таблицы (как ранее)
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE,
@@ -61,7 +85,7 @@ class Database:
                 daily_messages_sent INTEGER DEFAULT 0,
                 last_message_date TEXT
             )''')
-            
+
             c.execute('''CREATE TABLE IF NOT EXISTS user_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -74,7 +98,7 @@ class Database:
                 total_messages_sent INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
-            
+
             c.execute('''CREATE TABLE IF NOT EXISTS mailings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -92,9 +116,10 @@ class Database:
                 completed TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
-            
+
             c.execute("PRAGMA table_info(mailings)")
             columns = [col[1] for col in c.fetchall()]
+
             if 'name' not in columns:
                 c.execute('ALTER TABLE mailings ADD COLUMN name TEXT DEFAULT "Без названия"')
             if 'media_file_id' not in columns:
@@ -105,7 +130,7 @@ class Database:
                 c.execute('ALTER TABLE mailings ADD COLUMN total_targets INTEGER DEFAULT 0')
             if 'interval' not in columns:
                 c.execute('ALTER TABLE mailings ADD COLUMN interval INTEGER DEFAULT 300')
-            
+
             c.execute('''CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -114,12 +139,12 @@ class Database:
                 purchase_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             )''')
-            
+
             c.execute('''CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )''')
-            
+
             c.execute('''CREATE TABLE IF NOT EXISTS message_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mailing_id INTEGER NOT NULL,
@@ -131,34 +156,36 @@ class Database:
                 FOREIGN KEY (mailing_id) REFERENCES mailings(id),
                 FOREIGN KEY (account_id) REFERENCES user_accounts(id)
             )''')
-            
+
             c.execute('CREATE INDEX IF NOT EXISTS idx_message_queue_status ON message_queue(status)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_message_queue_mailing_id ON message_queue(mailing_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_user_id ON mailings(user_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_status ON mailings(status)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_user_id ON user_accounts(user_id)')
-            
+
             default_settings = [
                 ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
                 ('trial_hours', str(DEFAULT_TRIAL_HOURS)),
                 ('max_messages_per_day', str(MAX_MESSAGES_PER_DAY)),
                 ('message_delay', str(MESSAGE_DELAY))
             ]
+
             for key, value in default_settings:
                 c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (key, value))
+
             conn.commit()
-    
-    # ==================== ПОЛЬЗОВАТЕЛИ ====================
+
+    # Чтение (не блокируется)
     def get_user(self, telegram_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
             row = c.fetchone()
             return dict(row) if row else None
-    
+
     def create_user(self, telegram_id, username=None, first_name=None):
-        with self.get_conn() as conn:
-            try:
+        def _create():
+            with self.get_conn() as conn:
                 c = conn.cursor()
                 c.execute('''
                     INSERT INTO users (telegram_id, username, first_name)
@@ -166,32 +193,32 @@ class Database:
                 ''', (telegram_id, username, first_name))
                 conn.commit()
                 return True
-            except:
-                return False
-    
+        try:
+            return _create()
+        except:
+            return False
+
     def get_all_users(self):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('SELECT telegram_id FROM users')
             return [row['telegram_id'] for row in c.fetchall()]
-    
+
     def reset_daily_messages(self):
         with self.get_conn() as conn:
             c = conn.cursor()
-            today = datetime.now().strftime('%Y-%m-%d')
             c.execute('''
                 UPDATE users SET daily_messages_sent = 0
                 WHERE last_message_date < ?
-            ''', (today,))
+            ''', (datetime.now().strftime('%Y-%m-%d'),))
             conn.commit()
-    
+
     def reset_accounts_daily_messages(self):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE user_accounts SET messages_sent_today = 0')
             conn.commit()
-    
-    # ==================== ПОДПИСКИ ====================
+
     def has_active_subscription(self, telegram_id):
         user = self.get_user(telegram_id)
         if not user or not user['subscription_end']:
@@ -201,11 +228,13 @@ class Database:
             return end_date > datetime.now()
         except:
             return False
-    
+
     def get_subscription_end(self, telegram_id):
         user = self.get_user(telegram_id)
-        return user['subscription_end'] if user else None
-    
+        if not user:
+            return None
+        return user['subscription_end']
+
     def activate_subscription(self, telegram_id, days=7):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -215,7 +244,7 @@ class Database:
             ''', (end_date, telegram_id))
             conn.commit()
             return True
-    
+
     def activate_trial(self, telegram_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -228,12 +257,11 @@ class Database:
             ''', (end_date, telegram_id))
             conn.commit()
             return True
-    
+
     def check_trial_available(self, telegram_id):
         user = self.get_user(telegram_id)
         return user and not user['trial_used']
-    
-    # ==================== АККАУНТЫ ПОЛЬЗОВАТЕЛЕЙ ====================
+
     def add_user_account(self, user_id, phone, session_path):
         with self.get_conn() as conn:
             try:
@@ -244,9 +272,10 @@ class Database:
                 ''', (user_id, phone, session_path))
                 conn.commit()
                 return c.lastrowid
-            except:
+            except Exception as e:
+                print(f"Ошибка добавления аккаунта: {e}")
                 return None
-    
+
     def get_user_accounts(self, user_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -256,54 +285,42 @@ class Database:
                 ORDER BY added_date DESC
             ''', (user_id,))
             return [dict(row) for row in c.fetchall()]
-    
+
     def get_user_account(self, account_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('SELECT * FROM user_accounts WHERE id = ?', (account_id,))
             row = c.fetchone()
             return dict(row) if row else None
-    
-    def update_account_last_used(self, account_id):
-        """Синхронное обновление для внутреннего использования (через асинхронную обёртку)"""
-        for attempt in range(3):
-            try:
-                with self.get_conn() as conn:
-                    c = conn.cursor()
-                    c.execute('''
-                        UPDATE user_accounts 
-                        SET last_used = CURRENT_TIMESTAMP,
-                            messages_sent_today = messages_sent_today + 1,
-                            total_messages_sent = total_messages_sent + 1
-                        WHERE id = ?
-                    ''', (account_id,))
-                    conn.commit()
-                    return True
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                    continue
-                raise
-        return False
-    
-    async def update_account_last_used_async(self, account_id):
-        """Асинхронная обёртка"""
-        def _wrapper():
-            return self.update_account_last_used(account_id)
-        return await self._execute_with_lock(_wrapper)
-    
+
+    async def update_account_last_used(self, account_id):
+        """Асинхронное обновление через очередь"""
+        def _update():
+            with self.get_conn() as conn:
+                c = conn.cursor()
+                c.execute('''
+                    UPDATE user_accounts 
+                    SET last_used = CURRENT_TIMESTAMP,
+                        messages_sent_today = messages_sent_today + 1,
+                        total_messages_sent = total_messages_sent + 1
+                    WHERE id = ?
+                ''', (account_id,))
+                conn.commit()
+                return True
+        return await self._execute_write(_update)
+
     def deactivate_account(self, account_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE user_accounts SET is_active = 0 WHERE id = ?', (account_id,))
             conn.commit()
-    
+
     def deactivate_all_accounts(self, user_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE user_accounts SET is_active = 0 WHERE user_id = ?', (user_id,))
             conn.commit()
-    
+
     def delete_user_account(self, account_id, user_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -313,8 +330,7 @@ class Database:
             ''', (account_id, user_id))
             conn.commit()
             return c.rowcount > 0
-    
-    # ==================== РАССЫЛКИ ====================
+
     def create_mailing(self, user_id, name, message_text, targets, media_file_id=None, media_type=None, interval=300):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -324,50 +340,44 @@ class Database:
             ''', (user_id, name, message_text, json.dumps(targets), media_file_id, media_type, len(targets), interval))
             conn.commit()
             return c.lastrowid
-    
+
     def get_mailing(self, mailing_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('SELECT * FROM mailings WHERE id = ?', (mailing_id,))
             row = c.fetchone()
             return dict(row) if row else None
-    
-    def update_mailing_status(self, mailing_id, status, messages_sent=None):
-        for attempt in range(3):
-            try:
-                with self.get_conn() as conn:
-                    c = conn.cursor()
-                    if status == 'running' and messages_sent is None:
-                        c.execute('''
-                            UPDATE mailings 
-                            SET status = ?, started = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        ''', (status, mailing_id))
-                    elif status == 'completed' or status == 'stopped':
-                        c.execute('''
-                            UPDATE mailings 
-                            SET status = ?, completed = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        ''', (status, mailing_id))
-                    elif messages_sent is not None:
-                        c.execute('''
-                            UPDATE mailings 
-                            SET messages_sent = ?
-                            WHERE id = ?
-                        ''', (messages_sent, mailing_id))
-                    else:
-                        c.execute('''
-                            UPDATE mailings SET status = ? WHERE id = ?
-                        ''', (status, mailing_id))
-                    conn.commit()
-                    return True
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                    continue
-                raise
-        return False
-    
+
+    async def update_mailing_status(self, mailing_id, status, messages_sent=None):
+        def _update():
+            with self.get_conn() as conn:
+                c = conn.cursor()
+                if status == 'running' and messages_sent is None:
+                    c.execute('''
+                        UPDATE mailings 
+                        SET status = ?, started = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (status, mailing_id))
+                elif status == 'completed' or status == 'stopped':
+                    c.execute('''
+                        UPDATE mailings 
+                        SET status = ?, completed = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (status, mailing_id))
+                elif messages_sent is not None:
+                    c.execute('''
+                        UPDATE mailings 
+                        SET messages_sent = ?
+                        WHERE id = ?
+                    ''', (messages_sent, mailing_id))
+                else:
+                    c.execute('''
+                        UPDATE mailings SET status = ? WHERE id = ?
+                    ''', (status, mailing_id))
+                conn.commit()
+                return True
+        return await self._execute_write(_update)
+
     def get_user_mailings(self, user_id, limit=10):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -378,7 +388,7 @@ class Database:
                 LIMIT ?
             ''', (user_id, limit))
             return [dict(row) for row in c.fetchall()]
-    
+
     def delete_mailing(self, mailing_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -386,7 +396,7 @@ class Database:
             c.execute('DELETE FROM mailings WHERE id = ?', (mailing_id,))
             conn.commit()
             return True
-    
+
     def get_active_mailing(self, user_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -397,21 +407,20 @@ class Database:
             ''', (user_id,))
             row = c.fetchone()
             return dict(row) if row else None
-    
+
     def update_mailing_interval(self, mailing_id, interval):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE mailings SET interval = ? WHERE id = ?', (interval, mailing_id))
             conn.commit()
-    
+
     def update_mailing_name(self, mailing_id, name):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE mailings SET name = ? WHERE id = ?', (name, mailing_id))
             conn.commit()
             return c.rowcount > 0
-    
-    # ==================== ОЧЕРЕДЬ ====================
+
     def add_to_queue(self, mailing_id, account_id, targets):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -421,13 +430,13 @@ class Database:
                     VALUES (?, ?, ?)
                 ''', (mailing_id, account_id, target))
             conn.commit()
-    
+
     def clear_queue(self, mailing_id):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
             conn.commit()
-    
+
     def get_pending_messages(self, mailing_id=None, limit=10):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -446,33 +455,27 @@ class Database:
                     LIMIT ?
                 ''', (limit,))
             return [dict(row) for row in c.fetchall()]
-    
-    def update_queue_status(self, queue_id, status, error=None):
-        for attempt in range(3):
-            try:
-                with self.get_conn() as conn:
-                    c = conn.cursor()
-                    if error:
-                        c.execute('''
-                            UPDATE message_queue 
-                            SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        ''', (status, error, queue_id))
-                    else:
-                        c.execute('''
-                            UPDATE message_queue 
-                            SET status = ?, sent_date = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        ''', (status, queue_id))
-                    conn.commit()
-                    return True
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                    continue
-                raise
-        return False
-    
+
+    async def update_queue_status(self, queue_id, status, error=None):
+        def _update():
+            with self.get_conn() as conn:
+                c = conn.cursor()
+                if error:
+                    c.execute('''
+                        UPDATE message_queue 
+                        SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (status, error, queue_id))
+                else:
+                    c.execute('''
+                        UPDATE message_queue 
+                        SET status = ?, sent_date = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (status, queue_id))
+                conn.commit()
+                return True
+        return await self._execute_write(_update)
+
     def get_queue_stats(self, mailing_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -480,8 +483,7 @@ class Database:
             sent = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ? AND status = "sent"', (mailing_id,)).fetchone()[0]
             failed = c.execute('SELECT COUNT(*) FROM message_queue WHERE mailing_id = ? AND status = "failed"', (mailing_id,)).fetchone()[0]
             return {'total': total, 'sent': sent, 'failed': failed}
-    
-    # ==================== ПОКУПКИ ====================
+
     def add_purchase(self, user_id, item_type, amount):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -491,7 +493,7 @@ class Database:
             ''', (user_id, item_type, amount))
             conn.commit()
             return c.lastrowid
-    
+
     def get_user_purchases(self, user_id):
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -499,29 +501,27 @@ class Database:
                 SELECT * FROM purchases WHERE user_id = ? ORDER BY purchase_date DESC
             ''', (user_id,))
             return [dict(row) for row in c.fetchall()]
-    
-    # ==================== НАСТРОЙКИ ====================
+
     def get_setting(self, key):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('SELECT value FROM settings WHERE key = ?', (key,))
             row = c.fetchone()
             return row['value'] if row else None
-    
+
     def update_setting(self, key, value):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE settings SET value = ? WHERE key = ?', (value, key))
             conn.commit()
             return c.rowcount > 0
-    
+
     def get_all_settings(self):
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('SELECT * FROM settings')
             return {row['key']: row['value'] for row in c.fetchall()}
-    
-    # ==================== СТАТИСТИКА ====================
+
     def get_stats(self):
         with self.get_conn() as conn:
             c = conn.cursor()
