@@ -946,7 +946,12 @@ async def mailing_info_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Рассылка не найдена", show_alert=True)
         return
     
-    stats = await db.get_queue_stats(mailing_id)
+    # Статистика берётся из самой рассылки
+    stats = {
+        'total': mailing.get('total_targets', 0),
+        'sent': mailing.get('messages_sent', 0),
+        'failed': 0
+    }
     is_active = mailing_manager.is_mailing_active(mailing_id)
     
     name = mailing.get('name', 'Без названия')
@@ -961,7 +966,6 @@ async def mailing_info_cb(cb: types.CallbackQuery):
         f"Тип: {media_type}\n"
         f"Всего целей: {stats['total']}\n"
         f"✅ Отправлено: {stats['sent']}\n"
-        f"❌ Ошибок: {stats['failed']}\n"
         f"⏱ Интервал: {mailing.get('interval', 300)} сек\n"
         f"Начало: {mailing['started'] or '—'}\n"
     )
@@ -1004,11 +1008,6 @@ async def mailing_resume_cb(cb: types.CallbackQuery):
     
     if not await db.has_active_subscription(cb.from_user.id):
         await cb.answer("❌ Нужна подписка", show_alert=True)
-        return
-    
-    pending = await db.get_pending_messages(mailing_id, 1)
-    if not pending:
-        await cb.answer("❌ Нет сообщений для отправки. Создайте новую рассылку.", show_alert=True)
         return
     
     result = await mailing_manager.resume_mailing(mailing_id)
