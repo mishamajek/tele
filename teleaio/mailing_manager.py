@@ -55,7 +55,6 @@ class MailingManager:
             'status': 'running',
             'interval': interval,
             'sent_count': sent_count,
-            'current_index': sent_count % len(targets) if targets else 0,
             'total_targets': len(targets)
         }
 
@@ -67,12 +66,12 @@ class MailingManager:
         if mailing_id not in self.processing_tasks:
             task = asyncio.create_task(self._process_mailing_loop(mailing_id))
             self.processing_tasks[mailing_id] = task
-            logger.info(f"✅ Запущена параллельная рассылка {mailing_id} - '{name}'")
+            logger.info(f"✅ Запущена бесконечная рассылка {mailing_id} - '{name}'")
 
         return {"success": True, "mailing_id": mailing_id}
 
     async def _process_mailing_loop(self, mailing_id):
-        """Бесконечный цикл рассылки"""
+        """Бесконечный цикл рассылки (никогда не останавливается сам)"""
         try:
             while self.running and mailing_id in self.active_mailings:
                 mailing = self.active_mailings.get(mailing_id)
@@ -105,28 +104,24 @@ class MailingManager:
                     await asyncio.sleep(interval)
                     continue
 
-                # Отправляем каждому получателю параллельно
+                # Отправляем каждому получателю параллельно (как в вашем старом боте)
                 tasks = []
                 for i, target in enumerate(targets):
                     account = accounts_ok[i % len(accounts_ok)]
                     tasks.append(self._send_to_target(mailing_id, target, account, message, media_file_id, media_type))
 
-                results = []
-                for task in tasks:
-                    async with self._send_semaphore:
-                        result = await task
-                        results.append(result)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 sent_in_cycle = sum(1 for r in results if r and r.get('success'))
                 failed_in_cycle = sum(1 for r in results if r and not r.get('success'))
 
                 new_sent_count = sent_count + sent_in_cycle
                 mailing['sent_count'] = new_sent_count
-                mailing['current_index'] = (mailing.get('current_index', 0) + total_targets) % total_targets
                 await self.db.update_mailing_status(mailing_id, 'running', new_sent_count)
 
                 logger.info(f"✅ Цикл рассылки {mailing_id} завершен: +{sent_in_cycle} успешно, {failed_in_cycle} ошибок. Всего отправлено: {new_sent_count}")
 
+                # Никакой проверки на пустую очередь — просто ждём интервал и повторяем
                 await asyncio.sleep(interval)
 
         except asyncio.CancelledError:
