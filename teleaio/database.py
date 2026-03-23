@@ -239,6 +239,7 @@ class Database:
             return dict(row) if row else None
     
     async def update_account_last_used(self, account_id):
+        # Метод оставлен, но не используется в рассылке
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('UPDATE user_accounts SET last_used = CURRENT_TIMESTAMP, messages_sent_today = messages_sent_today + 1, total_messages_sent = total_messages_sent + 1 WHERE id = ?', (account_id,))

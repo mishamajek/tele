@@ -6,8 +6,7 @@ def main_kb():
     builder.button(text="[ РАССЫЛКА ]", callback_data="mailing")
     builder.button(text="[ ПРОФИЛЬ ]", callback_data="profile")
     builder.button(text="[ ПОМОЩЬ ]", callback_data="help")
-    builder.button(text="[ 📢 НОВОСТИ ]", callback_data="news_channel")
-    builder.adjust(1, 2, 1)
+    builder.adjust(1, 2)
     return builder.as_markup()
 
 def mailing_kb(has_accounts=False, has_active=False):
@@ -83,13 +82,6 @@ def my_accounts_kb(accounts):
         )
     builder.button(text="[ + ДОБАВИТЬ АККАУНТ ]", callback_data="add_account")
     builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_mailing")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def account_info_kb(account_id):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="[ ❌ УДАЛИТЬ ]", callback_data=f"delete_account_{account_id}")
-    builder.button(text="[ ◀️ НАЗАД ]", callback_data="back_to_my_accounts")
     builder.adjust(1)
     return builder.as_markup()
 

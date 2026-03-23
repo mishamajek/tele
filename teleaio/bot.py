@@ -60,13 +60,10 @@ class AdminBroadcast(StatesGroup):
     confirm = State()
 
 def fix_telegram_html(text):
-    """Преобразует HTML для совместимости с Telethon и aiogram"""
     if not text:
         return text
-    # Заменяем blockquote на обычную цитату
     text = text.replace('<blockquote>', '> ')
     text = text.replace('</blockquote>', '')
-    # Удаляем пустые теги
     text = re.sub(r'<(\w+)>\s*</\1>', '', text)
     return text
 
@@ -76,16 +73,12 @@ async def clean_and_send(chat_id, text, kb=None, msg_to_delete=None, parse_mode=
             await bot.delete_message(chat_id, msg_to_delete)
         except:
             pass
-    
-    # Очищаем текст от проблемных тегов для предпросмотра
     if text:
         text = fix_telegram_html(text)
-    
     try:
         msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode=parse_mode)
         return msg
     except Exception as e:
-        # Если ошибка с HTML, отправляем без форматирования
         logger.error(f"Ошибка отправки с HTML: {e}")
         try:
             clean_text = re.sub(r'<[^>]+>', '', text)
@@ -142,7 +135,6 @@ async def show_mailing_menu(user_id, chat_id, msg_id=None):
         name = active_mailing.get('name', 'Без названия')
         text += f"\n🟢 <b>Активна рассылка: {name}</b>\n"
         text += f"Интервал: {active_mailing.get('interval', 300)} сек\n"
-        text += f"Отправлено: {active_mailing.get('messages_sent', 0)}\n"
     
     if accounts:
         text += "\nВы можете запустить новую рассылку\nили управлять аккаунтами"
@@ -164,12 +156,7 @@ async def show_my_accounts(user_id, chat_id, msg_id=None):
     if accounts:
         for acc in accounts:
             status = "✅" if acc['is_active'] else "❌"
-            text += f"{status} {acc['phone']}\n"
-            text += f"   Отправлено: {acc['total_messages_sent']}\n"
-            text += f"   Сегодня: {acc['messages_sent_today']}\n"
-            if acc['last_used']:
-                text += f"   Последний раз: {acc['last_used'][:16]}\n"
-            text += "\n"
+            text += f"{status} {acc['phone']}\n\n"
     else:
         text += "Нет добавленных аккаунтов"
     
@@ -233,8 +220,7 @@ async def show_my_mailings(user_id, chat_id, msg_id=None):
             name = m.get('name', 'Без названия')
             text += f"{status_emoji} <b>{name}</b> (ID: {m['id']})\n"
             text += f"   Статус: {m['status']}\n"
-            text += f"   Интервал: {m.get('interval', 300)} сек\n"
-            text += f"   Отправлено: {m['messages_sent']}\n\n"
+            text += f"   Интервал: {m.get('interval', 300)} сек\n\n"
     else:
         text += "У вас пока нет рассылок"
     
@@ -624,9 +610,6 @@ async def account_info_cb(cb: types.CallbackQuery):
         f"═══════════════════════════\n\n"
         f"📱 Номер: <code>{account['phone']}</code>\n"
         f"📅 Добавлен: {account['added_date'][:16]}\n"
-        f"📊 Всего отправлено: {account['total_messages_sent']}\n"
-        f"📈 Отправлено сегодня: {account['messages_sent_today']}\n"
-        f"⏱ Последнее использование: {account['last_used'] or '—'}\n"
         f"✅ Статус: {'Активен' if account['is_active'] else 'Неактивен'}\n"
     )
     
@@ -946,12 +929,6 @@ async def mailing_info_cb(cb: types.CallbackQuery):
         await cb.answer("❌ Рассылка не найдена", show_alert=True)
         return
     
-    # Статистика берётся из самой рассылки
-    stats = {
-        'total': mailing.get('total_targets', 0),
-        'sent': mailing.get('messages_sent', 0),
-        'failed': 0
-    }
     is_active = mailing_manager.is_mailing_active(mailing_id)
     
     name = mailing.get('name', 'Без названия')
@@ -964,8 +941,6 @@ async def mailing_info_cb(cb: types.CallbackQuery):
         f"═══════════════════════════\n\n"
         f"Статус: <b>{'🟢 АКТИВНА' if is_active else '⏸ ОСТАНОВЛЕНА'}</b>\n"
         f"Тип: {media_type}\n"
-        f"Всего целей: {stats['total']}\n"
-        f"✅ Отправлено: {stats['sent']}\n"
         f"⏱ Интервал: {mailing.get('interval', 300)} сек\n"
         f"Начало: {mailing['started'] or '—'}\n"
     )
