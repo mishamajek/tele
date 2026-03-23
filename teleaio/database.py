@@ -15,7 +15,7 @@ from config import (
 class Database:
     def __init__(self, db_path='database.db'):
         self.db_path = db_path
-        self._lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
         self.init_db()
     
     @contextmanager
@@ -133,7 +133,6 @@ class Database:
             c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_user_id ON mailings(user_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_status ON mailings(status)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_user_id ON user_accounts(user_id)')
-            c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_is_active ON user_accounts(is_active)')
             
             default_settings = [
                 ('subscription_price', str(DEFAULT_SUBSCRIPTION_PRICE)),
@@ -146,9 +145,14 @@ class Database:
             
             conn.commit()
     
-    async def _run_sync(self, func, *args, **kwargs):
-        async with self._lock:
+    async def _execute_write(self, func, *args, **kwargs):
+        """Выполняет операцию записи с блокировкой"""
+        async with self._write_lock:
             return await asyncio.to_thread(func, *args, **kwargs)
+    
+    async def _execute_read(self, func, *args, **kwargs):
+        """Выполняет операцию чтения без блокировки"""
+        return await asyncio.to_thread(func, *args, **kwargs)
     
     def _get_one(self, query, params=None):
         with self._get_conn() as conn:
@@ -168,51 +172,37 @@ class Database:
                 c.execute(query)
             return c.fetchall()
     
-    async def _execute(self, query, params=None):
-        def _exec():
-            with self._get_conn() as conn:
-                c = conn.cursor()
-                if params:
-                    c.execute(query, params)
-                else:
-                    c.execute(query)
-                conn.commit()
-        await self._run_sync(_exec)
+    def _execute(self, query, params=None):
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            if params:
+                c.execute(query, params)
+            else:
+                c.execute(query)
+            conn.commit()
     
-    async def _execute_many(self, query, params_list):
-        def _exec_many():
-            with self._get_conn() as conn:
-                c = conn.cursor()
-                c.executemany(query, params_list)
-                conn.commit()
-        await self._run_sync(_exec_many)
+    # === АСИНХРОННЫЕ МЕТОДЫ ===
     
     async def get_user(self, telegram_id):
-        row = await asyncio.to_thread(self._get_one, 'SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
+        row = await self._execute_read(self._get_one, 'SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
         return dict(row) if row else None
     
     async def create_user(self, telegram_id, username=None, first_name=None):
         try:
-            await self._execute(
-                'INSERT INTO users (telegram_id, username, first_name) VALUES (?, ?, ?)',
-                (telegram_id, username, first_name)
-            )
+            await self._execute_write(self._execute, 'INSERT INTO users (telegram_id, username, first_name) VALUES (?, ?, ?)', (telegram_id, username, first_name))
             return True
         except:
             return False
     
     async def get_all_users(self):
-        rows = await asyncio.to_thread(self._get_all, 'SELECT telegram_id FROM users')
+        rows = await self._execute_read(self._get_all, 'SELECT telegram_id FROM users')
         return [row['telegram_id'] for row in rows]
     
     async def reset_daily_messages(self):
-        await self._execute(
-            'UPDATE users SET daily_messages_sent = 0 WHERE last_message_date < ?',
-            (datetime.now().strftime('%Y-%m-%d'),)
-        )
+        await self._execute_write(self._execute, 'UPDATE users SET daily_messages_sent = 0 WHERE last_message_date < ?', (datetime.now().strftime('%Y-%m-%d'),))
     
     async def reset_accounts_daily_messages(self):
-        await self._execute('UPDATE user_accounts SET messages_sent_today = 0')
+        await self._execute_write(self._execute, 'UPDATE user_accounts SET messages_sent_today = 0')
     
     async def has_active_subscription(self, telegram_id):
         user = await self.get_user(telegram_id)
@@ -230,7 +220,7 @@ class Database:
     
     async def activate_subscription(self, telegram_id, days=7):
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        await self._execute('UPDATE users SET subscription_end = ? WHERE telegram_id = ?', (end_date, telegram_id))
+        await self._execute_write(self._execute, 'UPDATE users SET subscription_end = ? WHERE telegram_id = ?', (end_date, telegram_id))
         return True
     
     async def activate_trial(self, telegram_id):
@@ -238,7 +228,7 @@ class Database:
         if user and user['trial_used']:
             return False
         end_date = (datetime.now() + timedelta(hours=24)).isoformat()
-        await self._execute('UPDATE users SET subscription_end = ?, trial_used = 1 WHERE telegram_id = ?', (end_date, telegram_id))
+        await self._execute_write(self._execute, 'UPDATE users SET subscription_end = ?, trial_used = 1 WHERE telegram_id = ?', (end_date, telegram_id))
         return True
     
     async def check_trial_available(self, telegram_id):
@@ -247,176 +237,126 @@ class Database:
     
     async def add_user_account(self, user_id, phone, session_path):
         try:
-            await self._execute(
-                'INSERT INTO user_accounts (user_id, phone, session_path) VALUES (?, ?, ?)',
-                (user_id, phone, session_path)
-            )
+            await self._execute_write(self._execute, 'INSERT INTO user_accounts (user_id, phone, session_path) VALUES (?, ?, ?)', (user_id, phone, session_path))
             return True
         except:
             return False
     
     async def get_user_accounts(self, user_id):
-        rows = await asyncio.to_thread(
-            self._get_all,
-            'SELECT * FROM user_accounts WHERE user_id = ? AND is_active = 1 ORDER BY added_date DESC',
-            (user_id,)
-        )
+        rows = await self._execute_read(self._get_all, 'SELECT * FROM user_accounts WHERE user_id = ? AND is_active = 1 ORDER BY added_date DESC', (user_id,))
         return [dict(row) for row in rows]
     
     async def get_user_account(self, account_id):
-        row = await asyncio.to_thread(self._get_one, 'SELECT * FROM user_accounts WHERE id = ?', (account_id,))
+        row = await self._execute_read(self._get_one, 'SELECT * FROM user_accounts WHERE id = ?', (account_id,))
         return dict(row) if row else None
     
     async def update_account_last_used(self, account_id):
-        await self._execute(
-            'UPDATE user_accounts SET last_used = CURRENT_TIMESTAMP, messages_sent_today = messages_sent_today + 1, total_messages_sent = total_messages_sent + 1 WHERE id = ?',
-            (account_id,)
-        )
+        await self._execute_write(self._execute, 'UPDATE user_accounts SET last_used = CURRENT_TIMESTAMP, messages_sent_today = messages_sent_today + 1, total_messages_sent = total_messages_sent + 1 WHERE id = ?', (account_id,))
     
     async def deactivate_account(self, account_id):
-        await self._execute('UPDATE user_accounts SET is_active = 0 WHERE id = ?', (account_id,))
+        await self._execute_write(self._execute, 'UPDATE user_accounts SET is_active = 0 WHERE id = ?', (account_id,))
     
     async def deactivate_all_accounts(self, user_id):
-        await self._execute('UPDATE user_accounts SET is_active = 0 WHERE user_id = ?', (user_id,))
+        await self._execute_write(self._execute, 'UPDATE user_accounts SET is_active = 0 WHERE user_id = ?', (user_id,))
     
     async def delete_user_account(self, account_id, user_id):
-        await self._execute('DELETE FROM user_accounts WHERE id = ? AND user_id = ?', (account_id, user_id))
+        await self._execute_write(self._execute, 'DELETE FROM user_accounts WHERE id = ? AND user_id = ?', (account_id, user_id))
         return True
     
     async def create_mailing(self, user_id, name, message_text, targets, media_file_id=None, media_type=None, interval=300):
-        await self._execute(
-            '''INSERT INTO mailings (user_id, name, message_text, targets, media_file_id, media_type, total_targets, interval)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (user_id, name, message_text, json.dumps(targets), media_file_id, media_type, len(targets), interval)
-        )
-        row = await asyncio.to_thread(self._get_one, 'SELECT last_insert_rowid()')
+        await self._execute_write(self._execute, '''INSERT INTO mailings (user_id, name, message_text, targets, media_file_id, media_type, total_targets, interval) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (user_id, name, message_text, json.dumps(targets), media_file_id, media_type, len(targets), interval))
+        row = await self._execute_read(self._get_one, 'SELECT last_insert_rowid()')
         return row[0] if row else None
     
     async def get_mailing(self, mailing_id):
-        row = await asyncio.to_thread(self._get_one, 'SELECT * FROM mailings WHERE id = ?', (mailing_id,))
+        row = await self._execute_read(self._get_one, 'SELECT * FROM mailings WHERE id = ?', (mailing_id,))
         return dict(row) if row else None
     
     async def update_mailing_status(self, mailing_id, status, messages_sent=None):
         if status == 'running' and messages_sent is None:
-            await self._execute('UPDATE mailings SET status = ?, started = CURRENT_TIMESTAMP WHERE id = ?', (status, mailing_id))
+            await self._execute_write(self._execute, 'UPDATE mailings SET status = ?, started = CURRENT_TIMESTAMP WHERE id = ?', (status, mailing_id))
         elif status in ('completed', 'stopped'):
-            await self._execute('UPDATE mailings SET status = ?, completed = CURRENT_TIMESTAMP WHERE id = ?', (status, mailing_id))
+            await self._execute_write(self._execute, 'UPDATE mailings SET status = ?, completed = CURRENT_TIMESTAMP WHERE id = ?', (status, mailing_id))
         elif messages_sent is not None:
-            await self._execute('UPDATE mailings SET messages_sent = ? WHERE id = ?', (messages_sent, mailing_id))
+            await self._execute_write(self._execute, 'UPDATE mailings SET messages_sent = ? WHERE id = ?', (messages_sent, mailing_id))
         else:
-            await self._execute('UPDATE mailings SET status = ? WHERE id = ?', (status, mailing_id))
+            await self._execute_write(self._execute, 'UPDATE mailings SET status = ? WHERE id = ?', (status, mailing_id))
     
     async def get_user_mailings(self, user_id, limit=10):
-        rows = await asyncio.to_thread(
-            self._get_all,
-            'SELECT * FROM mailings WHERE user_id = ? ORDER BY started DESC LIMIT ?',
-            (user_id, limit)
-        )
+        rows = await self._execute_read(self._get_all, 'SELECT * FROM mailings WHERE user_id = ? ORDER BY started DESC LIMIT ?', (user_id, limit))
         return [dict(row) for row in rows]
     
     async def delete_mailing(self, mailing_id):
-        await self._execute('DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
-        await self._execute('DELETE FROM mailings WHERE id = ?', (mailing_id,))
+        await self._execute_write(self._execute, 'DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
+        await self._execute_write(self._execute, 'DELETE FROM mailings WHERE id = ?', (mailing_id,))
         return True
     
     async def get_active_mailing(self, user_id):
-        row = await asyncio.to_thread(
-            self._get_one,
-            'SELECT * FROM mailings WHERE user_id = ? AND status = "running" ORDER BY started DESC LIMIT 1',
-            (user_id,)
-        )
+        row = await self._execute_read(self._get_one, 'SELECT * FROM mailings WHERE user_id = ? AND status = "running" ORDER BY started DESC LIMIT 1', (user_id,))
         return dict(row) if row else None
     
     async def update_mailing_interval(self, mailing_id, interval):
-        await self._execute('UPDATE mailings SET interval = ? WHERE id = ?', (interval, mailing_id))
+        await self._execute_write(self._execute, 'UPDATE mailings SET interval = ? WHERE id = ?', (interval, mailing_id))
     
     async def update_mailing_name(self, mailing_id, name):
-        await self._execute('UPDATE mailings SET name = ? WHERE id = ?', (name, mailing_id))
+        await self._execute_write(self._execute, 'UPDATE mailings SET name = ? WHERE id = ?', (name, mailing_id))
         return True
     
     async def add_to_queue(self, mailing_id, account_id, targets):
-        await self._execute_many(
-            'INSERT INTO message_queue (mailing_id, account_id, target) VALUES (?, ?, ?)',
-            [(mailing_id, account_id, target) for target in targets]
-        )
+        await self._execute_write(self._execute, 'INSERT INTO message_queue (mailing_id, account_id, target) VALUES (?, ?, ?)', (mailing_id, account_id, targets[0]))
     
     async def clear_queue(self, mailing_id):
-        await self._execute('DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
+        await self._execute_write(self._execute, 'DELETE FROM message_queue WHERE mailing_id = ?', (mailing_id,))
     
     async def get_pending_messages(self, mailing_id=None, limit=10):
         if mailing_id:
-            rows = await asyncio.to_thread(
-                self._get_all,
-                'SELECT * FROM message_queue WHERE status = "pending" AND mailing_id = ? ORDER BY id LIMIT ?',
-                (mailing_id, limit)
-            )
+            rows = await self._execute_read(self._get_all, 'SELECT * FROM message_queue WHERE status = "pending" AND mailing_id = ? ORDER BY id LIMIT ?', (mailing_id, limit))
         else:
-            rows = await asyncio.to_thread(
-                self._get_all,
-                'SELECT * FROM message_queue WHERE status = "pending" ORDER BY id LIMIT ?',
-                (limit,)
-            )
+            rows = await self._execute_read(self._get_all, 'SELECT * FROM message_queue WHERE status = "pending" ORDER BY id LIMIT ?', (limit,))
         return [dict(row) for row in rows]
     
     async def update_queue_status(self, queue_id, status, error=None):
         if error:
-            await self._execute(
-                'UPDATE message_queue SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP WHERE id = ?',
-                (status, error, queue_id)
-            )
+            await self._execute_write(self._execute, 'UPDATE message_queue SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP WHERE id = ?', (status, error, queue_id))
         else:
-            await self._execute(
-                'UPDATE message_queue SET status = ?, sent_date = CURRENT_TIMESTAMP WHERE id = ?',
-                (status, queue_id)
-            )
+            await self._execute_write(self._execute, 'UPDATE message_queue SET status = ?, sent_date = CURRENT_TIMESTAMP WHERE id = ?', (status, queue_id))
     
     async def get_queue_stats(self, mailing_id):
-        row = await asyncio.to_thread(
-            self._get_one,
-            'SELECT COUNT(*) as total, SUM(CASE WHEN status = "sent" THEN 1 ELSE 0 END) as sent, SUM(CASE WHEN status = "failed" THEN 1 ELSE 0 END) as failed FROM message_queue WHERE mailing_id = ?',
-            (mailing_id,)
-        )
-        return {'total': row['total'], 'sent': row['sent'], 'failed': row['failed']}
+        row = await self._execute_read(self._get_one, 'SELECT COUNT(*) as total, SUM(CASE WHEN status = "sent" THEN 1 ELSE 0 END) as sent, SUM(CASE WHEN status = "failed" THEN 1 ELSE 0 END) as failed FROM message_queue WHERE mailing_id = ?', (mailing_id,))
+        return {'total': row['total'], 'sent': row['sent'] or 0, 'failed': row['failed'] or 0}
     
     async def add_purchase(self, user_id, item_type, amount):
-        await self._execute(
-            'INSERT INTO purchases (user_id, item_type, amount) VALUES (?, ?, ?)',
-            (user_id, item_type, amount)
-        )
+        await self._execute_write(self._execute, 'INSERT INTO purchases (user_id, item_type, amount) VALUES (?, ?, ?)', (user_id, item_type, amount))
         return True
     
     async def get_user_purchases(self, user_id):
-        rows = await asyncio.to_thread(
-            self._get_all,
-            'SELECT * FROM purchases WHERE user_id = ? ORDER BY purchase_date DESC',
-            (user_id,)
-        )
+        rows = await self._execute_read(self._get_all, 'SELECT * FROM purchases WHERE user_id = ? ORDER BY purchase_date DESC', (user_id,))
         return [dict(row) for row in rows]
     
     async def get_setting(self, key):
-        row = await asyncio.to_thread(self._get_one, 'SELECT value FROM settings WHERE key = ?', (key,))
+        row = await self._execute_read(self._get_one, 'SELECT value FROM settings WHERE key = ?', (key,))
         return row['value'] if row else None
     
     async def update_setting(self, key, value):
-        await self._execute('UPDATE settings SET value = ? WHERE key = ?', (value, key))
+        await self._execute_write(self._execute, 'UPDATE settings SET value = ? WHERE key = ?', (value, key))
         return True
     
     async def get_all_settings(self):
-        rows = await asyncio.to_thread(self._get_all, 'SELECT * FROM settings')
+        rows = await self._execute_read(self._get_all, 'SELECT * FROM settings')
         return {row['key']: row['value'] for row in rows}
     
     async def get_stats(self):
-        users = await asyncio.to_thread(self._get_one, 'SELECT COUNT(*) FROM users')
-        active_subs = await asyncio.to_thread(self._get_one, 'SELECT COUNT(*) FROM users WHERE subscription_end > CURRENT_TIMESTAMP')
-        user_accounts = await asyncio.to_thread(self._get_one, 'SELECT COUNT(*) FROM user_accounts')
-        mailings = await asyncio.to_thread(self._get_one, 'SELECT COUNT(*) FROM mailings')
-        messages_sent = await asyncio.to_thread(self._get_one, 'SELECT COUNT(*) FROM message_queue WHERE status = "sent"')
-        purchases_total = await asyncio.to_thread(self._get_one, 'SELECT SUM(amount) FROM purchases') or 0
+        users = await self._execute_read(self._get_one, 'SELECT COUNT(*) FROM users')
+        active_subs = await self._execute_read(self._get_one, 'SELECT COUNT(*) FROM users WHERE subscription_end > CURRENT_TIMESTAMP')
+        user_accounts = await self._execute_read(self._get_one, 'SELECT COUNT(*) FROM user_accounts')
+        mailings = await self._execute_read(self._get_one, 'SELECT COUNT(*) FROM mailings')
+        messages_sent = await self._execute_read(self._get_one, 'SELECT COUNT(*) FROM message_queue WHERE status = "sent"')
+        purchases_total = await self._execute_read(self._get_one, 'SELECT SUM(amount) FROM purchases')
         return {
             'users': users[0],
             'active_subs': active_subs[0],
             'user_accounts': user_accounts[0],
             'mailings': mailings[0],
-            'messages_sent': messages_sent[0],
+            'messages_sent': messages_sent[0] or 0,
             'purchases_total': purchases_total[0] or 0
         }
