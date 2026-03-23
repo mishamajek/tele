@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 from datetime import datetime
 import json
 
@@ -159,7 +160,16 @@ class MailingManager:
                 )
             
             if result['success']:
-                self.db.update_account_last_used(account['id'])
+                # Обновляем статистику с повторными попытками
+                for attempt in range(3):
+                    try:
+                        self.db.update_account_last_used(account['id'])
+                        break
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e) and attempt < 2:
+                            await asyncio.sleep(0.1 * (attempt + 1))
+                            continue
+                        raise
                 logger.info(f"✅ Отправлено в {target}")
                 return {"success": True}
             else:

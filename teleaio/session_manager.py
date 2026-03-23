@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from telethon import TelegramClient
 from telethon.errors import (
@@ -151,8 +152,16 @@ class SessionManager:
                 logger.error(f"Файл сессии не найден: {session_path}")
                 return {"success": False, "error": "Файл сессии не найден. Удалите аккаунт и добавьте заново."}
             
+            # Преобразуем <blockquote> в стандартный формат цитаты
+            message = message.replace('<blockquote>', '> ')
+            message = message.replace('</blockquote>', '')
+            
             client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-            await client.connect()
+            
+            try:
+                await asyncio.wait_for(client.connect(), timeout=10)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Таймаут подключения"}
             
             if not await client.is_user_authorized():
                 await client.disconnect()
@@ -210,6 +219,11 @@ class SessionManager:
                 logger.error(f"Файл сессии не найден: {session_path}")
                 return {"success": False, "error": "Файл сессии не найден"}
             
+            # Преобразуем <blockquote> в стандартный формат цитаты
+            if caption:
+                caption = caption.replace('<blockquote>', '> ')
+                caption = caption.replace('</blockquote>', '')
+            
             # Скачиваем файл от бота
             safe_file_id = file_id.replace(':', '_').replace('/', '_')[-30:]
             download_path = config.DOWNLOADS_DIR / f"temp_{safe_file_id}.jpg"
@@ -224,9 +238,16 @@ class SessionManager:
                     return await self.send_message(session_path, target, caption)
                 return {"success": False, "error": "Не удалось загрузить фото"}
             
-            # Подключаемся через Telethon
             client = TelegramClient(str(session_path), self.api_id, self.api_hash)
-            await client.connect()
+            
+            try:
+                await asyncio.wait_for(client.connect(), timeout=10)
+            except asyncio.TimeoutError:
+                try:
+                    os.remove(download_path)
+                except:
+                    pass
+                return {"success": False, "error": "Таймаут подключения"}
             
             if not await client.is_user_authorized():
                 await client.disconnect()

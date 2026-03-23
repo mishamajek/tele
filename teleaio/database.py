@@ -1,6 +1,7 @@
 import sqlite3
-from typing import List, Dict, Optional, Tuple
+import time
 from contextlib import contextmanager
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import json
 from config import (
@@ -16,17 +17,35 @@ class Database:
         self.init_db()
     
     @contextmanager
-    def get_conn(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+    def get_conn(self, retry=3, delay=0.1):
+        """Получает соединение с БД с повторными попытками при блокировке"""
+        for attempt in range(retry):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30)
+                conn.row_factory = sqlite3.Row
+                # Включаем WAL режим для лучшей параллельной работы
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                try:
+                    yield conn
+                finally:
+                    conn.close()
+                return
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < retry - 1:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+                raise
+            except Exception as e:
+                raise
     
     def init_db(self):
         with self.get_conn() as conn:
             c = conn.cursor()
+            
+            # Включаем WAL режим
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
             
             # Пользователи
             c.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -117,6 +136,14 @@ class Database:
                 FOREIGN KEY (mailing_id) REFERENCES mailings(id),
                 FOREIGN KEY (account_id) REFERENCES user_accounts(id)
             )''')
+            
+            # Создаем индексы для ускорения
+            c.execute('CREATE INDEX IF NOT EXISTS idx_message_queue_status ON message_queue(status)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_message_queue_mailing_id ON message_queue(mailing_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_user_id ON mailings(user_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_mailings_status ON mailings(status)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_user_id ON user_accounts(user_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_user_accounts_is_active ON user_accounts(is_active)')
             
             # Настройки по умолчанию
             default_settings = [
@@ -247,16 +274,26 @@ class Database:
             return dict(row) if row else None
     
     def update_account_last_used(self, account_id):
-        with self.get_conn() as conn:
-            c = conn.cursor()
-            c.execute('''
-                UPDATE user_accounts 
-                SET last_used = CURRENT_TIMESTAMP,
-                    messages_sent_today = messages_sent_today + 1,
-                    total_messages_sent = total_messages_sent + 1
-                WHERE id = ?
-            ''', (account_id,))
-            conn.commit()
+        """Обновляет статистику аккаунта с повторными попытками"""
+        for attempt in range(3):
+            try:
+                with self.get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute('''
+                        UPDATE user_accounts 
+                        SET last_used = CURRENT_TIMESTAMP,
+                            messages_sent_today = messages_sent_today + 1,
+                            total_messages_sent = total_messages_sent + 1
+                        WHERE id = ?
+                    ''', (account_id,))
+                    conn.commit()
+                    return True
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                    continue
+                raise
+        return False
     
     def deactivate_account(self, account_id):
         with self.get_conn() as conn:
@@ -298,31 +335,41 @@ class Database:
             return dict(row) if row else None
     
     def update_mailing_status(self, mailing_id, status, messages_sent=None):
-        with self.get_conn() as conn:
-            c = conn.cursor()
-            if status == 'running' and messages_sent is None:
-                c.execute('''
-                    UPDATE mailings 
-                    SET status = ?, started = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (status, mailing_id))
-            elif status == 'completed' or status == 'stopped':
-                c.execute('''
-                    UPDATE mailings 
-                    SET status = ?, completed = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (status, mailing_id))
-            elif messages_sent is not None:
-                c.execute('''
-                    UPDATE mailings 
-                    SET messages_sent = ?
-                    WHERE id = ?
-                ''', (messages_sent, mailing_id))
-            else:
-                c.execute('''
-                    UPDATE mailings SET status = ? WHERE id = ?
-                ''', (status, mailing_id))
-            conn.commit()
+        """Обновляет статус рассылки с повторными попытками"""
+        for attempt in range(3):
+            try:
+                with self.get_conn() as conn:
+                    c = conn.cursor()
+                    if status == 'running' and messages_sent is None:
+                        c.execute('''
+                            UPDATE mailings 
+                            SET status = ?, started = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        ''', (status, mailing_id))
+                    elif status == 'completed' or status == 'stopped':
+                        c.execute('''
+                            UPDATE mailings 
+                            SET status = ?, completed = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        ''', (status, mailing_id))
+                    elif messages_sent is not None:
+                        c.execute('''
+                            UPDATE mailings 
+                            SET messages_sent = ?
+                            WHERE id = ?
+                        ''', (messages_sent, mailing_id))
+                    else:
+                        c.execute('''
+                            UPDATE mailings SET status = ? WHERE id = ?
+                        ''', (status, mailing_id))
+                    conn.commit()
+                    return True
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                    continue
+                raise
+        return False
     
     def get_user_mailings(self, user_id, limit=10):
         with self.get_conn() as conn:
@@ -403,21 +450,30 @@ class Database:
             return [dict(row) for row in c.fetchall()]
     
     def update_queue_status(self, queue_id, status, error=None):
-        with self.get_conn() as conn:
-            c = conn.cursor()
-            if error:
-                c.execute('''
-                    UPDATE message_queue 
-                    SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (status, error, queue_id))
-            else:
-                c.execute('''
-                    UPDATE message_queue 
-                    SET status = ?, sent_date = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (status, queue_id))
-            conn.commit()
+        for attempt in range(3):
+            try:
+                with self.get_conn() as conn:
+                    c = conn.cursor()
+                    if error:
+                        c.execute('''
+                            UPDATE message_queue 
+                            SET status = ?, error = ?, sent_date = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        ''', (status, error, queue_id))
+                    else:
+                        c.execute('''
+                            UPDATE message_queue 
+                            SET status = ?, sent_date = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        ''', (status, queue_id))
+                    conn.commit()
+                    return True
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                    continue
+                raise
+        return False
     
     def get_queue_stats(self, mailing_id):
         with self.get_conn() as conn:
