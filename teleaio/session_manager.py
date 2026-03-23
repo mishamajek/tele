@@ -24,7 +24,6 @@ class SessionManager:
         self.api_id = config.TELEGRAM_API_ID
         self.api_hash = config.TELEGRAM_API_HASH
         self.pending_codes = {}
-        self._client_lock = asyncio.Lock()
     
     async def create_session(self, user_id, phone, session_path):
         try:
@@ -143,13 +142,11 @@ class SessionManager:
             return {"success": False, "error": str(e)}
     
     async def send_message(self, session_path, target, message):
-        """Отправляет текстовое сообщение через сессию"""
         try:
             if not os.path.exists(session_path):
                 logger.error(f"Файл сессии не найден: {session_path}")
                 return {"success": False, "error": "Файл сессии не найден"}
             
-            # Преобразуем <blockquote> в стандартный формат цитаты
             message = message.replace('<blockquote>', '> ')
             message = message.replace('</blockquote>', '')
             
@@ -162,7 +159,6 @@ class SessionManager:
             
             if not await client.is_user_authorized():
                 await client.disconnect()
-                logger.error(f"Сессия не авторизована: {session_path}")
                 return {"success": False, "error": "Сессия недействительна"}
             
             try:
@@ -190,7 +186,6 @@ class SessionManager:
                 return {"success": False, "error": f"flood_wait:{e.seconds}"}
             except Exception as e:
                 await client.disconnect()
-                logger.error(f"Ошибка отправки: {e}")
                 return {"success": False, "error": str(e)}
                 
         except Exception as e:
@@ -198,24 +193,20 @@ class SessionManager:
             return {"success": False, "error": str(e)}
     
     async def send_photo(self, session_path, target, caption, file_id, bot):
-        """Отправляет фото через сессию"""
         try:
             if not os.path.exists(session_path):
-                logger.error(f"Файл сессии не найден: {session_path}")
                 return {"success": False, "error": "Файл сессии не найден"}
             
             if caption:
                 caption = caption.replace('<blockquote>', '> ')
                 caption = caption.replace('</blockquote>', '')
             
-            # Скачиваем файл
             safe_file_id = file_id.replace(':', '_').replace('/', '_')[-30:]
             download_path = config.DOWNLOADS_DIR / f"temp_{safe_file_id}.jpg"
             
             try:
                 file = await bot.get_file(file_id)
                 await bot.download_file(file.file_path, destination=download_path)
-                logger.info(f"Фото скачано: {download_path}")
             except Exception as e:
                 logger.error(f"Ошибка скачивания фото: {e}")
                 if caption:
@@ -284,7 +275,6 @@ class SessionManager:
                     os.remove(download_path)
                 except:
                     pass
-                logger.error(f"Ошибка отправки фото: {e}")
                 return {"success": False, "error": str(e)}
                 
         except Exception as e:
